@@ -85,7 +85,6 @@ extern struct kobject *ceph_kobj;
 extern struct list_head ceph_clients;
 extern spinlock_t ceph_clients_list_lock;
 
-
 /*
  * per-filesystem client state
  *

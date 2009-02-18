@@ -132,6 +132,7 @@ enum {
 	USE_RANDOM_MDS,
 	USE_CAP_MDS,    /* prefer mds we hold caps from */
 	USE_AUTH_MDS,   /* prefer authoritative mds for this metadata item */
+	USE_TABLE_MDS,
 };
 
 struct ceph_mds_request;
@@ -194,6 +195,19 @@ struct ceph_mds_request {
 };
 
 /*
+ * Ino number preallocation queue (circular buffer)
+ */
+struct ceph_ino_extent {
+	u64 start, len;
+};
+struct ceph_ino_queue {
+	struct mutex mutex;
+	int head, tail, num, max, numi;
+	struct ceph_ino_extent *inos;
+	int requesting;
+};
+
+/*
  * mds client state
  */
 struct ceph_mds_client {
@@ -207,6 +221,8 @@ struct ceph_mds_client {
 	struct ceph_mds_session **sessions;    /* NULL for mds if no session */
 	int                     max_sessions;  /* len of s_mds_sessions */
 	int                     stopping;      /* true if shutting down */
+
+	struct ceph_ino_queue inoq;
 
 	/*
 	 * snap_rwsem will cover cap linkage into snaprealms, and
@@ -295,5 +311,7 @@ extern void ceph_mdsc_flushed_all_caps(struct ceph_mds_client *mdsc,
 				       struct ceph_mds_session *session);
 extern struct ceph_mds_request *ceph_mdsc_get_listener_req(struct inode *inode,
 						    u64 tid);
+
+extern u64 ceph_mdsc_prealloc_ino(struct ceph_mds_client *mdsc);
 
 #endif

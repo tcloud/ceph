@@ -10,7 +10,7 @@
  */
 struct ceph_mdsmap {
 	u32 m_epoch, m_client_epoch, m_last_failure;
-	u32 m_root;
+	u32 m_root, m_table;
 	u32 m_session_timeout;          /* seconds */
 	u32 m_session_autoclose;        /* seconds */
 	u32 m_max_mds;                  /* size of m_addr, m_state arrays */

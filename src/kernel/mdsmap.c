@@ -62,6 +62,7 @@ struct ceph_mdsmap *ceph_mdsmap_decode(void **p, void *end)
 	ceph_decode_32(p, m->m_client_epoch);
 	ceph_decode_32(p, m->m_last_failure);
 	ceph_decode_32(p, m->m_root);
+	ceph_decode_32(p, m->m_table);
 	ceph_decode_32(p, m->m_session_timeout);
 	ceph_decode_32(p, m->m_session_autoclose);
 	ceph_decode_32(p, m->m_max_mds);

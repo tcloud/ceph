@@ -499,6 +499,9 @@ static int __choose_mds(struct ceph_mds_client *mdsc,
 		return req->r_resend_mds;
 	}
 
+	if (mode == USE_TABLE_MDS)
+		return mdsc->mdsmap->m_table;
+
 	if (mode == USE_CAP_MDS) {
 		mds = ceph_get_cap_mds(dentry->d_inode);
 		if (mds >= 0) {
@@ -629,6 +632,117 @@ static int __open_session(struct ceph_mds_client *mdsc,
 
 out:
 	return 0;
+}
+
+/*
+ * ino preallocation
+ */
+u64 ceph_mdsc_prealloc_dequeue(struct ceph_mds_client *mdsc)
+{
+	u64 r = 0;
+
+	mutex_lock(&mdsc->inoq.mutex);	
+	if (mdsc->inoq.numi) {
+		r = mdsc->inoq.inos[mdsc->inoq.head].start;
+		mdsc->inoq.inos[mdsc->inoq.head].start++;
+		mdsc->inoq.inos[mdsc->inoq.head].len--;
+		mdsc->inoq.numi--;
+		if (mdsc->inoq.inos[mdsc->inoq.head].len == 0) {
+			mdsc->inoq.num--;
+			mdsc->inoq.head++;
+			if (mdsc->inoq.head == mdsc->inoq.max)
+				mdsc->inoq.head = 0;
+		}
+	}
+	mutex_unlock(&mdsc->inoq.mutex);
+	dout(20, "prealloc_dequeue %llx\n", r);
+	return r;
+}
+
+int prealloc_enqueue(struct ceph_mds_client *mdsc, u64 first, int num)
+{
+	int room;
+	int ret;
+
+	dout(10, "prealloc_enqueue %llx~%d\n", first, num);
+	mutex_lock(&mdsc->inoq.mutex);
+
+	mdsc->inoq.requesting -= num;
+
+	room = mdsc->inoq.max - mdsc->inoq.num;
+	if (!room) {
+		/* realloc */
+		int newlen = mdsc->inoq.num ? mdsc->inoq.num*2 : 4;
+		struct ceph_ino_extent *newq =
+			kmalloc(newlen * sizeof(*newq), GFP_NOFS);
+		int a, b;
+
+		dout(20, "prealloc_enqueue realloc %d\n", newlen);
+		ret = -ENOMEM;
+		if (!newq)
+			goto out;
+		if (mdsc->inoq.head > mdsc->inoq.tail) {
+			a = mdsc->inoq.num - mdsc->inoq.head;
+			b = mdsc->inoq.tail;
+		} else {
+			a = mdsc->inoq.tail - mdsc->inoq.head;
+			b = 0;
+		}
+		memcpy(newq, mdsc->inoq.inos + mdsc->inoq.head,
+		       a*sizeof(u64));
+		if (b)
+			memcpy(newq + a, mdsc->inoq.inos, b*sizeof(*newq));
+		kfree(mdsc->inoq.inos);
+		mdsc->inoq.inos = newq;
+		mdsc->inoq.head = 0;
+		mdsc->inoq.tail = mdsc->inoq.num;
+	}
+
+	mdsc->inoq.inos[mdsc->inoq.tail].start = first;
+	mdsc->inoq.inos[mdsc->inoq.tail].len = num;
+	mdsc->inoq.num++;
+	mdsc->inoq.numi += num;
+	if (mdsc->inoq.tail == mdsc->inoq.max)
+		mdsc->inoq.tail = 0;
+
+	ret = 0;
+out:
+	mutex_unlock(&mdsc->inoq.mutex);
+	return ret;
+}
+
+int request_prealloc(struct ceph_mds_client *mdsc)
+{
+	struct ceph_mds_request *req;
+	struct ceph_mds_request_head *rhead;
+	int target = 1024;
+	int num, err;
+
+	mutex_lock(&mdsc->inoq.mutex);
+	num = target - mdsc->inoq.numi - mdsc->inoq.requesting;
+	dout(10, "request_prealloc have %d want %d requesting %d .. %d\n",
+	     mdsc->inoq.num, target, mdsc->inoq.requesting, num);
+	if (target < mdsc->inoq.numi + mdsc->inoq.requesting ||
+	    num < mdsc->inoq.requesting) {
+		mutex_unlock(&mdsc->inoq.mutex);
+		return 0;
+	}
+	mdsc->inoq.requesting += num;
+	mutex_unlock(&mdsc->inoq.mutex);
+
+	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_PREALLOC,
+				       0, NULL, 0, NULL, NULL, USE_TABLE_MDS);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+	rhead = req->r_request->front.iov_base;
+	rhead->args.prealloc.num = cpu_to_le32(num);
+	err = ceph_mdsc_do_request(mdsc, NULL, req);
+	if (err > 0) {
+		struct ceph_mds_reply_head *h = req->r_reply->front.iov_base;
+		prealloc_enqueue(mdsc, le64_to_cpu(h->ino), err);
+	}	
+	ceph_mdsc_put_request(req);
+	return err;	
 }
 
 /*
@@ -2090,6 +2204,8 @@ static void delayed_work(struct work_struct *work)
 	if (want_map)
 		ceph_monc_request_mdsmap(&mdsc->client->monc, want_map);
 
+	request_prealloc(mdsc);
+
 	schedule_delayed(mdsc);
 }
 
@@ -2104,6 +2220,8 @@ void ceph_mdsc_init(struct ceph_mds_client *mdsc, struct ceph_client *client)
 	mdsc->sessions = NULL;
 	mdsc->max_sessions = 0;
 	mdsc->stopping = 0;
+	memset(&mdsc->inoq, 0, sizeof(mdsc->inoq));
+	mutex_init(&mdsc->inoq.mutex);
 	init_rwsem(&mdsc->snap_rwsem);
 	INIT_RADIX_TREE(&mdsc->snap_realms, GFP_NOFS);
 	INIT_LIST_HEAD(&mdsc->snap_empty);
@@ -2333,6 +2451,5 @@ bad:
 	derr(1, "problem with mdsmap %d\n", err);
 	return;
 }
-
 
 /* eof */
