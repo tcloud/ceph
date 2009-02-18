@@ -962,6 +962,9 @@ void Server::dispatch_client_request(MDRequest *mdr)
   case CEPH_MDS_OP_SYMLINK:
     handle_client_symlink(mdr);
     break;
+  case CEPH_MDS_OP_CREATE:
+    handle_client_create(mdr);
+    break;
 
 
     // snaps
@@ -2554,6 +2557,62 @@ void Server::handle_client_symlink(MDRequest *mdr)
   le->metablob.add_primary_dentry(dn, true, newi);
 
   journal_and_reply(mdr, newi, 0, le, new C_MDS_mknod_finish(mds, mdr, dn, newi, follows));
+}
+
+
+void Server::handle_client_create(MDRequest *mdr)
+{
+  MClientRequest *req = mdr->client_request;
+  
+  CDentry *dn = rdlock_path_xlock_dentry(mdr, false, false);
+  if (!dn) return;
+
+  mdr->now = g_clock.real_now();
+  snapid_t follows = dn->get_dir()->inode->find_snaprealm()->get_newest_seq();
+
+  CInode *newi = prepare_new_inode(mdr, dn->get_dir(), inodeno_t(req->head.ino));
+  assert(newi);
+
+  dn->push_projected_linkage(newi);
+
+  newi->inode.mode = req->head.args.create.mode;
+  newi->inode.rdev = req->head.args.create.rdev;
+  newi->inode.uid = req->head.args.create.uid;
+  newi->inode.gid = req->head.args.create.gid;
+
+  newi->inode.size = req->head.args.create.size;
+  newi->inode.mtime = req->head.args.create.mtime;
+  newi->inode.ctime = req->head.args.create.ctime;
+  newi->inode.atime = req->head.args.create.atime;
+
+  newi->inode.rstat.rbytes = newi->inode.size;
+  newi->inode.rstat.rfiles = 1;
+  newi->inode.version = dn->pre_dirty();
+
+  newi->symlink = req->get_path2();
+
+  dn->first = newi->first = follows+1;
+
+  // prepare finisher
+  mdr->ls = mdlog->get_current_segment();
+  EUpdate *le = new EUpdate(mdlog, "create");
+  le->metablob.add_client_req(req->get_reqid());
+  journal_allocated_inos(mdr, &le->metablob);
+  mdcache->predirty_journal_parents(mdr, &le->metablob, newi, dn->get_dir(), PREDIRTY_PRIMARY|PREDIRTY_DIR, 1);
+  le->metablob.add_primary_dentry(dn, true, newi);
+
+  int client = mdr->get_client();
+  Capability *cap = newi->get_client_cap(client);
+  int keep = req->head.args.create.caps;
+  cap->set_wanted(req->head.args.create.wanted);
+  cap->issue(keep);
+
+  newi->filelock.set_state((keep & CEPH_CAP_FILE_EXCL) ? LOCK_EXCL:LOCK_SYNC);
+  newi->authlock.set_state((keep & CEPH_CAP_AUTH_EXCL) ? LOCK_EXCL:LOCK_SYNC);
+  newi->linklock.set_state((keep & CEPH_CAP_LINK_EXCL) ? LOCK_EXCL:LOCK_SYNC);
+  newi->xattrlock.set_state((keep & CEPH_CAP_XATTR_EXCL) ? LOCK_EXCL:LOCK_SYNC);  
+
+  mdlog->submit_entry(le, new C_MDS_mknod_finish(mds, mdr, dn, newi, follows), true);
 }
 
 

@@ -690,6 +690,8 @@ enum {
 	CEPH_MDS_OP_RMDIR      = 0x01221,
 	CEPH_MDS_OP_SYMLINK    = 0x01222,
 
+	CEPH_MDS_OP_CREATE     = 0x01230,
+
 	CEPH_MDS_OP_OPEN       = 0x10302,
 	CEPH_MDS_OP_TRUNCATE   = 0x11303,
 	CEPH_MDS_OP_LTRUNCATE  = 0x01303,
@@ -772,6 +774,12 @@ union ceph_mds_request_args {
 	struct {
 		__le32 mode;
 	} __attribute__ ((packed)) mkdir;
+	struct {
+		__le32 uid, gid, mode, rdev;
+		__le64 size;
+		struct ceph_timespec ctime, mtime, atime;
+		__le32 caps, wanted;
+	} __attribute__ ((packed)) create;
 	struct {
 		__le32 flags;
 		__le32 mode;

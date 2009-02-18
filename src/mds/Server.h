@@ -133,6 +133,7 @@ public:
   void handle_client_mknod(MDRequest *mdr);
   void handle_client_mkdir(MDRequest *mdr);
   void handle_client_symlink(MDRequest *mdr);
+  void handle_client_create(MDRequest *mdr);
 
   // link
   void handle_client_link(MDRequest *mdr);
