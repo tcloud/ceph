@@ -214,6 +214,7 @@ struct ceph_inode_frag {
  */
 #define CEPH_I_COMPLETE  1  /* we have complete directory cached */
 #define CEPH_I_READDIR   2  /* no dentries trimmed since readdir start */
+#define CEPH_I_NEW       4  /* not yet created on mds */
 
 struct ceph_inode_info {
 	struct ceph_vino i_vino;   /* ceph ino + snap */
@@ -677,6 +678,8 @@ extern struct kmem_cache *ceph_inode_cachep;
 
 extern struct inode *ceph_alloc_inode(struct super_block *sb);
 extern void ceph_destroy_inode(struct inode *inode);
+extern int ceph_async_create(struct inode *dir, struct dentry *dentry,
+			     int issued, int mode, const char *symdest);
 
 extern struct inode *ceph_get_inode(struct super_block *sb,
 				    struct ceph_vino vino);

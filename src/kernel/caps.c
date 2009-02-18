@@ -319,6 +319,12 @@ int __ceph_caps_issued(struct ceph_inode_info *ci, int *implemented)
 	struct ceph_cap *cap;
 	struct rb_node *p;
 
+	if (ci->i_ceph_flags & CEPH_I_NEW) {
+		if (implemented)
+			*implemented = CEPH_CAP_ANY;
+		return CEPH_CAP_ANY;
+	}
+
 	if (implemented)
 		*implemented = 0;
 	for (p = rb_first(&ci->i_caps); p; p = rb_next(p)) {

@@ -972,6 +972,8 @@ static inline int ceph_flags_to_mode(int flags)
 #define CEPH_CAP_ANY_FILE_WR (CEPH_CAP_FILE_WR|CEPH_CAP_FILE_WRBUFFER)
 #define CEPH_CAP_ANY_WR   (CEPH_CAP_ANY_EXCL | CEPH_CAP_ANY_FILE_WR)
 
+#define CEPH_CAP_ANY      (CEPH_CAP_ANY_WR|CEPH_CAP_ANY_RD)
+
 /*
  * these cap bits time out, if no others are held and nothing is
  * registered as 'wanted' by the client.

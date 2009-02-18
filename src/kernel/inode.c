@@ -301,6 +301,10 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 	INIT_LIST_HEAD(&ci->i_listener_list);
 	spin_lock_init(&ci->i_listener_lock);
 
+	ci->vfs_inode.i_mapping->a_ops = &ceph_aops;
+	ci->vfs_inode.i_mapping->backing_dev_info =
+		&ceph_client(sb)->backing_dev_info;
+
 	return &ci->vfs_inode;
 }
 
@@ -401,6 +405,96 @@ int ceph_fill_file_bits(struct inode *inode, int issued,
 		     inode, time_warp_seq, ci->i_time_warp_seq);
 
 	return queue_trunc;
+}
+
+static void init_inode_ops(struct inode *inode)
+{
+	switch (inode->i_mode & S_IFMT) {
+	case S_IFIFO:
+	case S_IFBLK:
+	case S_IFCHR:
+	case S_IFSOCK:
+		init_special_inode(inode, inode->i_mode, inode->i_rdev);
+		inode->i_op = &ceph_file_iops;
+		break;
+	case S_IFREG:
+		inode->i_op = &ceph_file_iops;
+		inode->i_fop = &ceph_file_fops;
+		break;
+	case S_IFLNK:
+		inode->i_op = &ceph_symlink_iops;
+		break;
+	case S_IFDIR:
+		inode->i_op = &ceph_dir_iops;
+		inode->i_fop = &ceph_dir_fops;
+		break;
+	default:
+		derr(0, "%p BAD mode 0%o S_IFMT 0%o\n", inode, inode->i_mode,
+		     inode->i_mode & S_IFMT);
+	}
+}
+
+int ceph_async_create(struct inode *dir, struct dentry *dentry,
+		      int issued, int mode, const char *symdest)
+{
+	struct ceph_vino vino;
+	struct inode *inode;
+	struct ceph_inode_info *ci;
+	struct ceph_mds_client *mdsc = &ceph_client(dir->i_sb)->mdsc;
+
+	dout(10, "async_create %p dn %p issued %s mode 0%o\n",
+	     dir, dentry, ceph_cap_string(issued), mode);
+	if ((issued & CEPH_CAP_FILE_EXCL) == 0 ||
+	    (issued & CEPH_CAP_AUTH_RDCACHE) == 0)
+		return -EPERM;
+	if ((ceph_inode(dir)->i_ceph_flags & CEPH_I_COMPLETE) == 0)
+		return -EPERM;
+
+	vino.ino = ceph_mdsc_prealloc_dequeue(mdsc);
+	if (!vino.ino)
+		return -EAGAIN;
+	vino.snap = CEPH_NOSNAP;
+
+	inode = ceph_get_inode(dir->i_sb, vino);
+	if (!inode)
+		return -EIO;
+	ci = ceph_inode(inode);
+
+	if (symdest) {
+		inode->i_size = strlen(symdest);
+		ci->i_symlink = kmalloc(inode->i_size + 1, GFP_NOFS);
+		if (!ci->i_symlink)
+			return -ENOMEM;
+		strcpy(ci->i_symlink, symdest);
+	}
+
+	inode->i_uid = current->fsuid;
+	if (dir->i_mode & S_ISGID) {
+		inode->i_gid = dir->i_gid;
+		if (S_ISDIR(mode))
+			mode |= S_ISGID;
+	} else
+		inode->i_gid = current->fsgid;
+	inode->i_mode = mode;
+
+	inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_nlink = 1;
+
+	ci->i_version = 1;
+	ci->i_ceph_flags = CEPH_I_NEW | CEPH_I_COMPLETE;
+
+	if (S_ISDIR(mode)) 
+		ci->i_rsubdirs = 1;
+	else
+		ci->i_rfiles = 1;
+
+	dout(10, "async_create %p dn %p issued %s mode 0%o = %p (%llx)\n",
+	     dir, dentry, ceph_cap_string(issued), mode, inode, vino.ino);
+
+	init_inode_ops(inode);
+
+	d_add(dentry, inode);
+	return 0;
 }
 
 /*
@@ -504,10 +598,6 @@ static int fill_inode(struct inode *inode,
 
 	ci->i_old_atime = inode->i_atime;
 
-	inode->i_mapping->a_ops = &ceph_aops;
-	inode->i_mapping->backing_dev_info =
-		&ceph_client(inode->i_sb)->backing_dev_info;
-
 no_change:
 	spin_unlock(&inode->i_lock);
 
@@ -559,20 +649,10 @@ no_change:
 	if (dirinfo)
 		ceph_fill_dirfrag(inode, dirinfo);
 
+	init_inode_ops(inode);
+
 	switch (inode->i_mode & S_IFMT) {
-	case S_IFIFO:
-	case S_IFBLK:
-	case S_IFCHR:
-	case S_IFSOCK:
-		init_special_inode(inode, inode->i_mode, inode->i_rdev);
-		inode->i_op = &ceph_file_iops;
-		break;
-	case S_IFREG:
-		inode->i_op = &ceph_file_iops;
-		inode->i_fop = &ceph_file_fops;
-		break;
 	case S_IFLNK:
-		inode->i_op = &ceph_symlink_iops;
 		if (!ci->i_symlink) {
 			int symlen = iinfo->symlink_len;
 
@@ -586,9 +666,6 @@ no_change:
 		}
 		break;
 	case S_IFDIR:
-		inode->i_op = &ceph_dir_iops;
-		inode->i_fop = &ceph_dir_fops;
-
 		ci->i_files = le64_to_cpu(info->files);
 		ci->i_subdirs = le64_to_cpu(info->subdirs);
 		ci->i_rbytes = le64_to_cpu(info->rbytes);
@@ -609,11 +686,6 @@ no_change:
 			ci->i_ceph_flags |= CEPH_I_COMPLETE;
 		}
 		break;
-	default:
-		derr(0, "BAD mode 0%o S_IFMT 0%o\n", inode->i_mode,
-		     inode->i_mode & S_IFMT);
-		err = -EINVAL;
-		goto out;
 	}
 	err = 0;
 

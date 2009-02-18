@@ -349,18 +349,24 @@ static struct dentry *ceph_lookup(struct inode *dir, struct dentry *dentry,
 }
 
 static int ceph_mknod(struct inode *dir, struct dentry *dentry,
-			  int mode, dev_t rdev)
+		      int mode, dev_t rdev)
 {
 	struct ceph_client *client = ceph_sb_to_client(dir->i_sb);
 	struct ceph_mds_client *mdsc = &client->mdsc;
 	struct ceph_mds_request *req;
 	int err;
+	int issued = ceph_caps_issued(ceph_inode(dir));
 
 	if (ceph_snap(dir) != CEPH_NOSNAP)
 		return -EROFS;
 
 	dout(5, "mknod in dir %p dentry %p mode 0%o rdev %d\n",
 	     dir, dentry, mode, rdev);
+	if (ceph_async_create(dir, dentry, issued, mode, NULL) == 0) {
+		dentry->d_inode->i_rdev = rdev;
+		return 0;
+	}
+
 	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_MKNOD, dentry, NULL,
 				       NULL, NULL, USE_AUTH_MDS);
 	if (IS_ERR(req)) {
@@ -370,7 +376,7 @@ static int ceph_mknod(struct inode *dir, struct dentry *dentry,
 	req->r_locked_dir = dir;
 	req->r_args.mknod.mode = cpu_to_le32(mode);
 	req->r_args.mknod.rdev = cpu_to_le32(rdev);
-	if ((ceph_caps_issued(ceph_inode(dir)) & CEPH_CAP_FILE_EXCL) == 0)
+	if ((issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
 	err = ceph_mdsc_do_request(mdsc, dir, req);
 	if (!err && req->r_reply_info.trace_numd == 0) {
@@ -419,17 +425,22 @@ static int ceph_create(struct inode *dir, struct dentry *dentry, int mode,
 }
 
 static int ceph_symlink(struct inode *dir, struct dentry *dentry,
-			    const char *dest)
+			const char *dest)
 {
 	struct ceph_client *client = ceph_sb_to_client(dir->i_sb);
 	struct ceph_mds_client *mdsc = &client->mdsc;
 	struct ceph_mds_request *req;
 	int err;
+	int issued = ceph_caps_issued(ceph_inode(dir));
 
 	if (ceph_snap(dir) != CEPH_NOSNAP)
 		return -EROFS;
 
 	dout(5, "symlink in dir %p dentry %p to '%s'\n", dir, dentry, dest);
+	if (ceph_async_create(dir, dentry, issued, S_IFLNK|S_IRWXUGO,
+			      dest) == 0)
+		return 0;
+
 	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_SYMLINK,
 				       dentry, NULL, NULL, dest, USE_AUTH_MDS);
 	if (IS_ERR(req)) {
@@ -437,7 +448,7 @@ static int ceph_symlink(struct inode *dir, struct dentry *dentry,
 		return PTR_ERR(req);
 	}
 	req->r_locked_dir = dir;
-	if ((ceph_caps_issued(ceph_inode(dir)) & CEPH_CAP_FILE_EXCL) == 0)
+	if ((issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
 	err = ceph_mdsc_do_request(mdsc, dir, req);
 	ceph_mdsc_put_request(req);
@@ -456,6 +467,7 @@ static int ceph_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 	int snaplen;
 	struct dentry *pathdentry = dentry;
 	int op = CEPH_MDS_OP_MKDIR;
+	int issued = ceph_caps_issued(ceph_inode(dir));
 
 	if (ceph_snap(dir) == CEPH_SNAPDIR) {
 		/* mkdir .snap/foo is a MKSNAP */
@@ -470,6 +482,9 @@ static int ceph_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 		return -EROFS;
 	} else {
 		dout(5, "mkdir dir %p dn %p mode 0%o\n", dir, dentry, mode);
+		mode |= S_IFDIR;
+		if (ceph_async_create(dir, dentry, issued, mode, NULL) == 0)
+			return 0;
 	}
 	req = ceph_mdsc_create_request(mdsc, op, pathdentry, NULL, 
 				       NULL, NULL, USE_AUTH_MDS);
@@ -483,7 +498,7 @@ static int ceph_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 	req->r_locked_dir = dir;
 	req->r_args.mkdir.mode = cpu_to_le32(mode);
 
-	if ((ceph_caps_issued(ceph_inode(dir)) & CEPH_CAP_FILE_EXCL) == 0)
+	if ((issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
 	err = ceph_mdsc_do_request(mdsc, dir, req);
 	ceph_mdsc_put_request(req);
@@ -493,7 +508,7 @@ static int ceph_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 }
 
 static int ceph_link(struct dentry *old_dentry, struct inode *dir,
-			 struct dentry *dentry)
+		     struct dentry *dentry)
 {
 	struct ceph_client *client = ceph_sb_to_client(dir->i_sb);
 	struct ceph_mds_client *mdsc = &client->mdsc;
