@@ -228,6 +228,7 @@ libmds_a_SOURCES = \
 	mds/LogEvent.cc \
 	mds/MDSTable.cc \
 	mds/InoTable.cc \
+	mds/MasterInoTable.cc \
 	mds/MDSTableClient.cc \
 	mds/MDSTableServer.cc \
 	mds/AnchorServer.cc \
@@ -396,6 +397,7 @@ noinst_HEADERS = \
         mds/Locker.h\
         mds/LogEvent.h\
         mds/LogSegment.h\
+        mds/MasterInoTable.h\
         mds/MDBalancer.h\
         mds/MDCache.h\
         mds/MDLog.h\
@@ -418,6 +420,7 @@ noinst_HEADERS = \
         mds/events/EImportStart.h\
         mds/events/EMetaBlob.h\
         mds/events/EOpen.h\
+	mds/events/EPrealloc.h\
         mds/events/ESession.h\
         mds/events/ESessions.h\
         mds/events/ESlaveUpdate.h\

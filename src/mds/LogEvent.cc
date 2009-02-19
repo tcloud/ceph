@@ -33,6 +33,7 @@
 #include "events/ESlaveUpdate.h"
 #include "events/EOpen.h"
 #include "events/ECommitted.h"
+#include "events/EPrealloc.h"
 
 #include "events/ETableClient.h"
 #include "events/ETableServer.h"
@@ -68,6 +69,7 @@ LogEvent *LogEvent::decode(bufferlist& bl)
   case EVENT_SLAVEUPDATE: le = new ESlaveUpdate; break;
   case EVENT_OPEN: le = new EOpen; break;
   case EVENT_COMMITTED: le = new ECommitted; break;
+  case EVENT_PREALLOC: le = new EPrealloc; break;
 
   case EVENT_TABLECLIENT: le = new ETableClient; break;
   case EVENT_TABLESERVER: le = new ETableServer; break;

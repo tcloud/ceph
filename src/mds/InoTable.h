@@ -21,6 +21,8 @@
 
 class MDS;
 
+WRITE_CLASS_ENCODER(interval_set<inodeno_t>)
+
 class InoTable : public MDSTable {
   interval_set<inodeno_t> free;   // unused ids
   interval_set<inodeno_t> projected_free;
@@ -44,11 +46,11 @@ class InoTable : public MDSTable {
   void init_inode();
   void reset_state();
   void encode_state(bufferlist& bl) {
-    ::encode(free.m, bl);
+    ::encode(free, bl);
   }
   void decode_state(bufferlist::iterator& bl) {
-    ::decode(free.m, bl);
-    projected_free.m = free.m;
+    ::decode(free, bl);
+    projected_free = free;
   }
 };
 

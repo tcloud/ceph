@@ -107,6 +107,10 @@ public:
   CDir* try_open_auth_dirfrag(CInode *diri, frag_t fg, MDRequest *mdr);
 
 
+  // prealloc
+  void handle_client_prealloc(MDRequest *mdr);
+  void _prealloc_finish(MDRequest *mdr, inodeno_t start, unsigned len);
+
   // requests on existing inodes.
   void handle_client_stat(MDRequest *mdr);
   void handle_client_findinode(MDRequest *mdr);

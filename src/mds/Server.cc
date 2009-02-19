@@ -21,6 +21,7 @@
 #include "MDBalancer.h"
 #include "AnchorClient.h"
 #include "InoTable.h"
+#include "MasterInoTable.h"
 #include "SnapClient.h"
 
 #include "msg/Messenger.h"
@@ -44,6 +45,7 @@
 #include "events/ESession.h"
 #include "events/EOpen.h"
 #include "events/ECommitted.h"
+#include "events/EPrealloc.h"
 
 #include "include/filepath.h"
 #include "common/Timer.h"
@@ -885,6 +887,10 @@ void Server::dispatch_client_request(MDRequest *mdr)
     handle_client_findinode(mdr);
     break;
 
+  case CEPH_MDS_OP_PREALLOC:
+    handle_client_prealloc(mdr);
+    break;
+
     // inodes ops.
   case CEPH_MDS_OP_STAT:
   case CEPH_MDS_OP_LSTAT:
@@ -975,6 +981,64 @@ void Server::dispatch_client_request(MDRequest *mdr)
     assert(0);
   }
 }
+
+
+// ---------------------------------------
+// client ino preallocation
+
+struct C_MDS_Prealloc : public Context {
+  Server *server;
+  MDRequest *mdr;
+  inodeno_t start;
+  unsigned len;
+  C_MDS_Prealloc(Server *s, MDRequest *m, inodeno_t st, unsigned l) : 
+    server(s), mdr(m), start(st), len(l) {}
+  void finish(int r) {
+    server->_prealloc_finish(mdr, start, len);
+  }
+};
+
+void Server::handle_client_prealloc(MDRequest *mdr)
+{
+  MClientRequest *req = mdr->client_request;
+  
+  dout(10) << "handle_client_prealloc " << *req
+	   << " num " << req->head.args.prealloc.num
+	   << dendl;
+
+  if (mds->get_nodeid() != mds->mdsmap->get_tableserver()) {
+    mdcache->request_forward(mdr, mds->mdsmap->get_tableserver());
+    return;
+  }
+
+  int client = mdr->get_client();
+  inodeno_t start;
+  unsigned len = req->head.args.prealloc.num;
+
+  if (!len) {
+    reply_request(mdr, 0);
+    return;
+  }
+
+  mds->masterinotable->project_prealloc(client, start, len);
+  
+  EPrealloc *le = new EPrealloc(mds->mdlog, client, start, len, mds->masterinotable->get_projected_version());
+  mds->mdlog->submit_entry(le, new C_MDS_Prealloc(this, mdr, start, len));
+}
+
+
+void Server::_prealloc_finish(MDRequest *mdr, inodeno_t start, unsigned len)
+{
+  dout(10) << "_prealloc_finish " << *mdr << dendl;
+  int client = mdr->get_client();
+  mds->masterinotable->apply_prealloc(client, start, len);
+
+  MClientReply *reply = new MClientReply(mdr->client_request, 0);
+  reply->set_ino(start, len);
+  reply_request(mdr, reply);
+}
+
+
 
 
 // ---------------------------------------

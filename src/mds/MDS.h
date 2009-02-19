@@ -60,6 +60,7 @@ class MClientReply;
 class MMDSBeacon;
 
 class InoTable;
+class MasterInoTable;
 class SnapServer;
 class SnapClient;
 class AnchorServer;
@@ -94,6 +95,7 @@ class MDS : public Dispatcher {
   MDBalancer   *balancer;
 
   InoTable     *inotable;
+  MasterInoTable *masterinotable;
 
   AnchorServer *anchorserver;
   AnchorClient *anchorclient;

@@ -24,6 +24,7 @@
 #include "events/ESlaveUpdate.h"
 #include "events/EOpen.h"
 #include "events/ECommitted.h"
+#include "events/EPrealloc.h"
 
 #include "events/EExport.h"
 #include "events/EImportStart.h"
@@ -43,6 +44,7 @@
 #include "Migrator.h"
 
 #include "InoTable.h"
+#include "MasterInoTable.h"
 #include "MDSTableClient.h"
 #include "MDSTableServer.h"
 
@@ -187,6 +189,15 @@ C_Gather *LogSegment::try_to_expire(MDS *mds)
 	      << dendl;
     if (!gather) gather = new C_Gather;
     mds->inotable->save(gather->new_sub(), inotablev);
+  }
+
+  if (masterinotablev > mds->masterinotable->get_committed_version()) {
+    dout(10) << "try_to_expire saving masterinotable table, need " << masterinotablev
+	      << ", committed is " << mds->masterinotable->get_committed_version()
+	      << " (" << mds->masterinotable->get_committing_version() << ")"
+	      << dendl;
+    if (!gather) gather = new C_Gather;
+    mds->masterinotable->save(gather->new_sub(), masterinotablev);
   }
 
   // sessionmap
@@ -821,6 +832,28 @@ void ECommitted::replay(MDS *mds)
 }
 
 
+// -----------------------
+// EPrealloc
+
+void EPrealloc::update_segment()
+{
+  _segment->masterinotablev = tablev;
+}
+
+void EPrealloc::replay(MDS *mds)
+{
+  if (mds->masterinotable->get_version() >= tablev) {
+    dout(10) << "EPrealloc.replay masterinotable tablev " << tablev
+	     << " <= table " << mds->masterinotable->get_version() << dendl;
+  } else {
+    dout(10) << " EPrealloc.replay masterinotable v " << tablev
+	     << " - 1 == table " << mds->masterinotable->get_version()
+	     << dendl;
+    mds->masterinotable->replay_prealloc(client, start, len);
+    assert(tablev == mds->masterinotable->get_version());
+  }
+  update_segment();
+}
 
 // -----------------------
 // ESlaveUpdate

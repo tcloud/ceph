@@ -656,13 +656,16 @@ struct ceph_mds_session_head {
  * metadata ops.
  *  & 0x001000 -> write op
  *  & 0x010000 -> follow symlink (e.g. stat(), not lstat()).
- &  & 0x100000 -> use weird ino/path trace
+ *  & 0x100000 -> use weird ino/path trace
+ *  & 0x200000 -> no path
  */
 #define CEPH_MDS_OP_WRITE        0x001000
 #define CEPH_MDS_OP_FOLLOW_LINK  0x010000
 #define CEPH_MDS_OP_INO_PATH     0x100000
 enum {
 	CEPH_MDS_OP_FINDINODE  = 0x100100,
+
+	CEPH_MDS_OP_PREALLOC   = 0x200100,
 
 	CEPH_MDS_OP_LSTAT      = 0x00100,
 	CEPH_MDS_OP_LUTIME     = 0x01101,
@@ -702,6 +705,7 @@ static inline const char *ceph_mds_op_name(int op)
 {
 	switch (op) {
 	case CEPH_MDS_OP_FINDINODE: return "findinode";
+	case CEPH_MDS_OP_PREALLOC: return "prealloc";
 	case CEPH_MDS_OP_STAT:  return "stat";
 	case CEPH_MDS_OP_LSTAT:  return "lstat";
 	case CEPH_MDS_OP_UTIME: return "utime";
@@ -735,6 +739,9 @@ static inline const char *ceph_mds_op_name(int op)
 }
 
 union ceph_mds_request_args {
+	struct {
+		__le32 num;
+	} __attribute__ ((packed)) prealloc;
 	struct {
 		__le32 mask;
 	} __attribute__ ((packed)) stat;
@@ -811,6 +818,7 @@ struct ceph_mds_reply_head {
 	ceph_tid_t tid;
 	__le32 op;
 	__le32 result;
+	__le64 ino;       /* used by prealloc */
 	__le32 mdsmap_epoch;
 	__u8 safe;
 } __attribute__ ((packed));

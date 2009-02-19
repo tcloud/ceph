@@ -372,13 +372,13 @@ class MDSMap {
     ::encode(client_epoch, bl);
     ::encode(last_failure, bl);
     ::encode(root, bl);
+    ::encode(tableserver, bl);
     ::encode(session_timeout, bl);
     ::encode(session_autoclose, bl);
     ::encode(max_mds, bl);
     ::encode(mds_info, bl);
 
     ::encode(created, bl);
-    ::encode(tableserver, bl);
     ::encode(in, bl);
     ::encode(inc, bl);
     ::encode(up, bl);
@@ -390,13 +390,13 @@ class MDSMap {
     ::decode(client_epoch, p);
     ::decode(last_failure, p);
     ::decode(root, p);
+    ::decode(tableserver, p);
     ::decode(session_timeout, p);
     ::decode(session_autoclose, p);
     ::decode(max_mds, p);
     ::decode(mds_info, p);
 
     ::decode(created, p);
-    ::decode(tableserver, p);
     ::decode(in, p);
     ::decode(inc, p);
     ::decode(up, p);

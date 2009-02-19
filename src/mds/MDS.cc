@@ -39,6 +39,7 @@
 #include "SnapClient.h"
 
 #include "InoTable.h"
+#include "MasterInoTable.h"
 
 #include "common/Logger.h"
 #include "common/LogType.h"
@@ -94,6 +95,7 @@ MDS::MDS(int whoami_, Messenger *m, MonMap *mm) :
   balancer = new MDBalancer(this);
 
   inotable = new InoTable(this);
+  masterinotable = new MasterInoTable(this);
   snapserver = new SnapServer(this);
   snapclient = new SnapClient(this);
   anchorserver = new AnchorServer(this);
@@ -128,6 +130,7 @@ MDS::~MDS() {
   if (mdlog) { delete mdlog; mdlog = NULL; }
   if (balancer) { delete balancer; balancer = NULL; }
   if (inotable) { delete inotable; inotable = NULL; }
+  if (masterinotable) { delete masterinotable; masterinotable = NULL; }
   if (anchorserver) { delete anchorserver; anchorserver = NULL; }
   if (snapserver) { delete snapserver; snapserver = NULL; }
   if (snapclient) { delete snapclient; snapclient = NULL; }
@@ -814,6 +817,10 @@ void MDS::boot_create()
     dout(10) << "boot_create creating fresh snaptable" << dendl;
     snapserver->reset();
     snapserver->save(fin->new_sub());
+
+    dout(10) << "boot_create creating fresh masterinotable" << dendl;
+    masterinotable->reset();
+    masterinotable->save(fin->new_sub());
   }
 }
 
@@ -859,6 +866,9 @@ void MDS::boot_start(int step, int r)
 
 	dout(2) << "boot_start " << step << ": opening snap table" << dendl;	
 	snapserver->load(gather->new_sub());
+
+	dout(2) << "boot_start " << step << ": opening master ino table" << dendl;	
+	masterinotable->load(gather->new_sub());
       }
       
       dout(2) << "boot_start " << step << ": opening mds log" << dendl;
