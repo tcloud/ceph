@@ -440,7 +440,12 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 	struct ceph_vino vino;
 	struct inode *inode;
 	struct ceph_inode_info *ci;
-	struct ceph_mds_client *mdsc = &ceph_client(dir->i_sb)->mdsc;
+	struct ceph_client *client = ceph_client(dir->i_sb);
+	struct ceph_mds_client *mdsc;
+	
+	if ((client->mount_args.flags & CEPH_MOUNT_ASYNCMETA) == 0)
+		return -EPERM;
+	mdsc = &client->mdsc;
 
 	dout(10, "async_create %p dn %p issued %s mode 0%o\n",
 	     dir, dentry, ceph_cap_string(issued), mode);
@@ -449,8 +454,6 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 		return -EPERM;
 	if ((ceph_inode(dir)->i_ceph_flags & CEPH_I_COMPLETE) == 0)
 		return -EPERM;
-
-	return -1; // NO
 
 	vino.ino = ceph_mdsc_prealloc_dequeue(mdsc);
 	if (!vino.ino)

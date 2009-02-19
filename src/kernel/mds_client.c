@@ -742,7 +742,8 @@ static int request_prealloc(struct ceph_mds_client *mdsc)
 
 void ceph_mdsc_request_prealloc(struct ceph_mds_client *mdsc)
 {
-	request_prealloc(mdsc);
+	if (mdsc->client->mount_args.flags & CEPH_MOUNT_ASYNCMETA)
+		request_prealloc(mdsc);
 }	
 
 u64 ceph_mdsc_prealloc_dequeue(struct ceph_mds_client *mdsc)

@@ -350,6 +350,7 @@ enum {
 	Opt_rbytes,
 	Opt_norbytes,
 	Opt_nocrc,
+	Opt_asyncmeta,
 };
 
 static match_table_t arg_tokens = {
@@ -381,6 +382,7 @@ static match_table_t arg_tokens = {
 	{Opt_rbytes, "rbytes"},
 	{Opt_norbytes, "norbytes"},
 	{Opt_nocrc, "nocrc"},
+	{Opt_asyncmeta, "asyncmeta"},
 	{-1, NULL}
 };
 
@@ -617,6 +619,9 @@ static int parse_mount_args(int flags, char *options, const char *dev_name,
 		case Opt_nocrc:
 			args->flags |= CEPH_MOUNT_NOCRC;
 			break;
+		case Opt_asyncmeta:
+			args->flags |= CEPH_MOUNT_ASYNCMETA;
+			break;
 
 		default:
 			BUG_ON(token);
@@ -645,6 +650,8 @@ static struct ceph_client *ceph_create_client(void)
 	client->sb = NULL;
 	client->mount_state = CEPH_MOUNT_MOUNTING;
 	client->whoami = -1;
+
+	INIT_LIST_HEAD(&client->clients_all);
 
 	client->msgr = NULL;
 
@@ -676,7 +683,8 @@ static void ceph_destroy_client(struct ceph_client *client)
 	dout(10, "destroy_client %p\n", client);
 
 	spin_lock(&ceph_clients_list_lock);
-	list_del(&client->clients_all);
+	if (!list_empty(&client->clients_all))
+		list_del(&client->clients_all);
 	spin_unlock(&ceph_clients_list_lock);
 
 	/* unmount */

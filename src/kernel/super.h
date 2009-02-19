@@ -48,6 +48,7 @@ static inline unsigned long time_sub(unsigned long a, unsigned long b)
 #define CEPH_MOUNT_DIRSTAT       (1<<4) /* funky `cat dirname` for stats */
 #define CEPH_MOUNT_RBYTES        (1<<5) /* dir st_bytes = rbytes */
 #define CEPH_MOUNT_NOCRC         (1<<6) /* no data crc on writes */
+#define CEPH_MOUNT_ASYNCMETA     (1<<7) /* perform async mds ops */
 
 #define CEPH_MOUNT_DEFAULT   (CEPH_MOUNT_RBYTES)
 
