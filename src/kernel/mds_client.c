@@ -637,29 +637,7 @@ out:
 /*
  * ino preallocation
  */
-u64 ceph_mdsc_prealloc_dequeue(struct ceph_mds_client *mdsc)
-{
-	u64 r = 0;
-
-	mutex_lock(&mdsc->inoq.mutex);	
-	if (mdsc->inoq.numi) {
-		r = mdsc->inoq.inos[mdsc->inoq.head].start;
-		mdsc->inoq.inos[mdsc->inoq.head].start++;
-		mdsc->inoq.inos[mdsc->inoq.head].len--;
-		mdsc->inoq.numi--;
-		if (mdsc->inoq.inos[mdsc->inoq.head].len == 0) {
-			mdsc->inoq.num--;
-			mdsc->inoq.head++;
-			if (mdsc->inoq.head == mdsc->inoq.max)
-				mdsc->inoq.head = 0;
-		}
-	}
-	mutex_unlock(&mdsc->inoq.mutex);
-	dout(20, "prealloc_dequeue %llx\n", r);
-	return r;
-}
-
-int prealloc_enqueue(struct ceph_mds_client *mdsc, u64 first, int num)
+static int prealloc_enqueue(struct ceph_mds_client *mdsc, u64 first, int num)
 {
 	int room;
 	int ret;
@@ -711,38 +689,88 @@ out:
 	return ret;
 }
 
-int request_prealloc(struct ceph_mds_client *mdsc)
+/*
+ * called under mdsc->mutex only if error.
+ */
+static void prealloc_completion(struct ceph_mds_client *mdsc,
+				struct ceph_mds_request *req)
+{
+	if (!IS_ERR(req->r_reply)) {
+		struct ceph_mds_reply_head *h = req->r_reply->front.iov_base;
+		int err = le32_to_cpu(h->result);
+
+		dout(10, "prealloc_completion got %llx~%d\n",
+		     le64_to_cpu(h->ino), err);
+		prealloc_enqueue(mdsc, le64_to_cpu(h->ino), err);
+	} else {
+		int err = PTR_ERR(req->r_reply);
+		dout(10, "prealloc_completion err %d\n", err);
+	}
+
+	ceph_mdsc_put_request(req);
+}
+
+static int request_prealloc(struct ceph_mds_client *mdsc)
 {
 	struct ceph_mds_request *req;
-	struct ceph_mds_request_head *rhead;
-	int target = 1024;
-	int num, err;
+	int min = mdsc->client->mount_args.prealloc_min;
+	int max = mdsc->client->mount_args.prealloc_max;
+	int willhave;
+	int want;
 
 	mutex_lock(&mdsc->inoq.mutex);
-	num = target - mdsc->inoq.numi - mdsc->inoq.requesting;
-	dout(10, "request_prealloc have %d want %d requesting %d .. %d\n",
-	     mdsc->inoq.num, target, mdsc->inoq.requesting, num);
-	if (target < mdsc->inoq.numi + mdsc->inoq.requesting ||
-	    num < mdsc->inoq.requesting) {
+	willhave = mdsc->inoq.numi + mdsc->inoq.requesting;
+	want = max - mdsc->inoq.numi - mdsc->inoq.requesting;
+	dout(10, "request_prealloc have %d+%d=%d, target %d-%d, want %d\n",
+	     mdsc->inoq.num, mdsc->inoq.requesting, willhave, min, max, want);
+	if (willhave > min) {
 		mutex_unlock(&mdsc->inoq.mutex);
 		return 0;
 	}
-	mdsc->inoq.requesting += num;
+	mdsc->inoq.requesting += want;
 	mutex_unlock(&mdsc->inoq.mutex);
 
-	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_PREALLOC,
-				       0, NULL, 0, NULL, NULL, USE_TABLE_MDS);
+	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_PREALLOC, NULL, NULL,
+				       NULL, NULL, USE_TABLE_MDS);
 	if (IS_ERR(req))
 		return PTR_ERR(req);
-	rhead = req->r_request->front.iov_base;
-	rhead->args.prealloc.num = cpu_to_le32(num);
-	err = ceph_mdsc_do_request(mdsc, NULL, req);
-	if (err > 0) {
-		struct ceph_mds_reply_head *h = req->r_reply->front.iov_base;
-		prealloc_enqueue(mdsc, le64_to_cpu(h->ino), err);
-	}	
-	ceph_mdsc_put_request(req);
-	return err;	
+	req->r_args.prealloc.num = cpu_to_le32(want);
+	req->r_callback = prealloc_completion;
+	ceph_mdsc_submit_request(mdsc, req);
+	return 0;
+}
+
+void ceph_mdsc_request_prealloc(struct ceph_mds_client *mdsc)
+{
+	request_prealloc(mdsc);
+}	
+
+u64 ceph_mdsc_prealloc_dequeue(struct ceph_mds_client *mdsc)
+{
+	u64 r = 0;
+	int want_more = 0;
+
+	mutex_lock(&mdsc->inoq.mutex);	
+	if (mdsc->inoq.numi) {
+		r = mdsc->inoq.inos[mdsc->inoq.head].start;
+		mdsc->inoq.inos[mdsc->inoq.head].start++;
+		mdsc->inoq.inos[mdsc->inoq.head].len--;
+		mdsc->inoq.numi--;
+		if (mdsc->inoq.inos[mdsc->inoq.head].len == 0) {
+			mdsc->inoq.num--;
+			mdsc->inoq.head++;
+			if (mdsc->inoq.head == mdsc->inoq.max)
+				mdsc->inoq.head = 0;
+		}
+	}
+	if (mdsc->inoq.num < mdsc->client->mount_args.prealloc_min)
+		want_more = 1;
+	mutex_unlock(&mdsc->inoq.mutex);
+	dout(20, "prealloc_dequeue %llx\n", r);
+
+	if (want_more)
+		request_prealloc(mdsc);  /* a little sloppy... */
+	return r;
 }
 
 /*
@@ -2203,8 +2231,6 @@ static void delayed_work(struct work_struct *work)
 
 	if (want_map)
 		ceph_monc_request_mdsmap(&mdsc->client->monc, want_map);
-
-	request_prealloc(mdsc);
 
 	schedule_delayed(mdsc);
 }

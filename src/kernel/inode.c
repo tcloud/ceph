@@ -301,10 +301,6 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 	INIT_LIST_HEAD(&ci->i_listener_list);
 	spin_lock_init(&ci->i_listener_lock);
 
-	ci->vfs_inode.i_mapping->a_ops = &ceph_aops;
-	ci->vfs_inode.i_mapping->backing_dev_info =
-		&ceph_client(sb)->backing_dev_info;
-
 	return &ci->vfs_inode;
 }
 
@@ -432,6 +428,10 @@ static void init_inode_ops(struct inode *inode)
 		derr(0, "%p BAD mode 0%o S_IFMT 0%o\n", inode, inode->i_mode,
 		     inode->i_mode & S_IFMT);
 	}
+
+	inode->i_mapping->a_ops = &ceph_aops;
+	inode->i_mapping->backing_dev_info =
+		&ceph_client(inode->i_sb)->backing_dev_info;
 }
 
 int ceph_async_create(struct inode *dir, struct dentry *dentry,
@@ -449,6 +449,8 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 		return -EPERM;
 	if ((ceph_inode(dir)->i_ceph_flags & CEPH_I_COMPLETE) == 0)
 		return -EPERM;
+
+	return -1; // NO
 
 	vino.ino = ceph_mdsc_prealloc_dequeue(mdsc);
 	if (!vino.ino)

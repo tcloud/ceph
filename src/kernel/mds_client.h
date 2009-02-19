@@ -313,5 +313,6 @@ extern struct ceph_mds_request *ceph_mdsc_get_listener_req(struct inode *inode,
 						    u64 tid);
 
 extern u64 ceph_mdsc_prealloc_dequeue(struct ceph_mds_client *mdsc);
+extern void ceph_mdsc_request_prealloc(struct ceph_mds_client *mdsc);
 
 #endif

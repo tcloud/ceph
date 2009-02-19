@@ -474,6 +474,8 @@ static int parse_mount_args(int flags, char *options, const char *dev_name,
 	args->flags = CEPH_MOUNT_DEFAULT;
 	args->osd_timeout = 5;    /* seconds */
 	args->mount_timeout = 30; /* seconds */
+	args->prealloc_min = 512;
+	args->prealloc_max = 1024;
 	args->snapdir_name = ".snap";
 
 	/* ip1[:port1][,ip2[:port2]...]:/subdir/in/fs */
@@ -818,6 +820,9 @@ static int ceph_mount(struct ceph_client *client, struct vfsmount *mnt,
 	mnt->mnt_root = root;
 	mnt->mnt_sb = client->sb;
 	client->mount_state = CEPH_MOUNT_MOUNTED;
+
+	ceph_mdsc_request_prealloc(&client->mdsc);
+
 	dout(10, "mount success\n");
 	err = 0;
 

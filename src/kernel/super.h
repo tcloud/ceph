@@ -68,6 +68,7 @@ struct ceph_mount_args {
 	int wsize;
 	int rsize;            /* max readahead */
 	int osd_timeout;
+	int prealloc_min, prealloc_max;
 	char *snapdir_name;   /* default ".snap" */
 };
 
