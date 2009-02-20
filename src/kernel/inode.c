@@ -285,6 +285,7 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 	ci->i_wr_ref = 0;
 	ci->i_wrbuffer_ref = 0;
 	ci->i_wrbuffer_ref_head = 0;
+	ci->i_excl_ref = 0;
 	ci->i_rdcache_gen = 0;
 	ci->i_rdcache_revoking = 0;
 
@@ -300,6 +301,8 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 
 	INIT_LIST_HEAD(&ci->i_listener_list);
 	spin_lock_init(&ci->i_listener_lock);
+	INIT_LIST_HEAD(&ci->i_new_child);
+	INIT_LIST_HEAD(&ci->i_new_children);
 
 	return &ci->vfs_inode;
 }
@@ -434,44 +437,56 @@ static void init_inode_ops(struct inode *inode)
 		&ceph_client(inode->i_sb)->backing_dev_info;
 }
 
+/*
+ * caller must hold dir->i_mutex
+ */
 int ceph_async_create(struct inode *dir, struct dentry *dentry,
 		      int issued, int mode, const char *symdest)
 {
 	struct ceph_vino vino;
 	struct inode *inode;
-	struct ceph_inode_info *ci;
+	struct ceph_inode_info *dirci = ceph_inode(dir), *ci;
 	struct ceph_client *client = ceph_client(dir->i_sb);
 	struct ceph_mds_client *mdsc;
-	
+	int got;
+	int err;
+
 	if ((client->mount_args.flags & CEPH_MOUNT_ASYNCMETA) == 0)
 		return -EPERM;
 	mdsc = &client->mdsc;
 
 	dout(10, "async_create %p dn %p issued %s mode 0%o\n",
 	     dir, dentry, ceph_cap_string(issued), mode);
-	if ((issued & CEPH_CAP_FILE_EXCL) == 0 ||
-	    (issued & CEPH_CAP_AUTH_RDCACHE) == 0)
-		return -EPERM;
-	if ((ceph_inode(dir)->i_ceph_flags & CEPH_I_COMPLETE) == 0)
-		return -EPERM;
+	err = -EPERM;
+	if (ceph_get_cap_refs(dirci, CEPH_CAP_FILE_EXCL,
+			      CEPH_CAP_FILE_EXCL, &got, 0) == 0)
+		goto out;
+
+	if ((dirci->i_ceph_flags & CEPH_I_COMPLETE) == 0)
+		goto out_put;
 
 	vino.ino = ceph_mdsc_prealloc_dequeue(mdsc);
 	if (!vino.ino)
-		return -EAGAIN;
+		goto out_put;
 	vino.snap = CEPH_NOSNAP;
 
+	err = -EIO;
 	inode = ceph_get_inode(dir->i_sb, vino);
 	if (!inode)
-		return -EIO;
+		goto out_put;
 	ci = ceph_inode(inode);
 
 	if (symdest) {
 		inode->i_size = strlen(symdest);
 		ci->i_symlink = kmalloc(inode->i_size + 1, GFP_NOFS);
+		err = -ENOMEM;
 		if (!ci->i_symlink)
-			return -ENOMEM;
+			goto out_iput;
 		strcpy(ci->i_symlink, symdest);
 	}
+
+	/* add to dir child list */
+	list_add(&ci->i_new_child, &dirci->i_new_children);
 
 	inode->i_uid = current->fsuid;
 	if (dir->i_mode & S_ISGID) {
@@ -488,7 +503,7 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 	ci->i_version = 1;
 	ci->i_ceph_flags = CEPH_I_NEW | CEPH_I_COMPLETE;
 
-	if (S_ISDIR(mode)) 
+	if (S_ISDIR(mode))
 		ci->i_rsubdirs = 1;
 	else
 		ci->i_rfiles = 1;
@@ -499,6 +514,107 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 	init_inode_ops(inode);
 
 	d_add(dentry, inode);
+	return 0;
+
+out_iput:
+	iput(inode);
+out_put:
+	ceph_put_cap_refs(ceph_inode(dir), got);	
+out:
+	return err;
+}
+
+
+static void ceph_create_completion(struct ceph_mds_client *mds,
+				   struct ceph_mds_request *req)
+{
+	struct inode *inode = req->r_dentry->d_inode;
+	struct ceph_inode_info *ci = ceph_inode(inode);
+	struct ceph_mds_client *mdsc = &ceph_client(inode->i_sb)->mdsc;
+
+	dout(10, "create_completion %p on %p\n", req, inode);
+	mutex_lock(&mdsc->create_mutex);
+	if (ci->i_ceph_flags & CEPH_I_NEW) {
+		ci->i_ceph_flags &= ~(CEPH_I_NEW|CEPH_I_CREATING);
+		list_del_init(&ci->i_new_child);
+		ceph_put_cap_refs(ceph_inode(d_find_alias(inode)->d_parent->d_inode),
+				  CEPH_CAP_FILE_EXCL);
+	}
+	mutex_unlock(&mdsc->create_mutex);
+	ceph_mdsc_put_request(req);
+}
+
+static int __flush_create(struct dentry *dentry)
+{
+	struct inode *inode = dentry->d_inode;
+	struct ceph_mds_client *mdsc = &ceph_client(inode->i_sb)->mdsc;
+	struct ceph_inode_info *ci = ceph_inode(inode);
+	struct ceph_mds_request *req;
+	struct inode *dir = dentry->d_parent->d_inode;
+	struct ceph_inode_info *dirci = ceph_inode(dir);
+
+	/* make sure parent is created first */
+	if ((dirci->i_ceph_flags & CEPH_I_NEW) &&
+	    (dirci->i_ceph_flags & CEPH_I_CREATING) == 0)
+		__flush_create(dentry->d_parent);
+
+	dout(10, "__flush_create dn %p inode %p\n", dentry, inode);
+	BUG_ON((ci->i_ceph_flags & CEPH_I_NEW) == 0);
+	
+	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_CREATE,
+				       dentry, NULL, NULL, NULL,
+				       USE_AUTH_MDS);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+	req->r_callback = ceph_create_completion;
+	req->r_last_inode = igrab(inode);
+
+	spin_lock(&inode->i_lock);
+	req->r_args.create.uid = cpu_to_le32(inode->i_uid);
+	req->r_args.create.gid = cpu_to_le32(inode->i_gid);
+	req->r_args.create.mode = cpu_to_le32(inode->i_mode);
+	req->r_args.create.rdev = cpu_to_le32(inode->i_rdev);
+	req->r_args.create.size = cpu_to_le64(inode->i_size);
+	ceph_encode_timespec(&req->r_args.create.ctime, &inode->i_ctime);
+	ceph_encode_timespec(&req->r_args.create.mtime, &inode->i_mtime);
+	ceph_encode_timespec(&req->r_args.create.atime, &inode->i_atime);
+	req->r_args.create.caps = cpu_to_le32(__ceph_caps_issued(ci, NULL));
+	req->r_args.create.wanted = cpu_to_le32(__ceph_caps_wanted(ci));
+	spin_unlock(&inode->i_lock);
+
+	ceph_mdsc_submit_request(mdsc, req, dir);
+
+	ci->i_ceph_flags |= CEPH_I_CREATING;
+	return 0;
+}
+
+int ceph_flush_create(struct dentry *dentry)
+{
+	struct ceph_mds_client *mdsc = &ceph_client(dentry->d_sb)->mdsc;
+	int err = 0;
+
+	dout(10, "flush_create %p %p\n", dentry, dentry->d_inode);
+	mutex_lock(&mdsc->create_mutex);
+	if (ceph_inode(dentry->d_inode)->i_ceph_flags & CEPH_I_NEW)
+		err = __flush_create(dentry);
+	mutex_unlock(&mdsc->create_mutex);
+	return err;	
+}
+
+static int flush_child_creates(struct inode *dir)
+{
+	struct ceph_mds_client *mdsc = &ceph_client(dir->i_sb)->mdsc;
+	struct list_head *p, *n;
+	struct ceph_inode_info *dirci = ceph_inode(dir);
+
+	dout(10, "flush_child_creates %p\n", dir);
+	mutex_lock(&mdsc->create_mutex);
+	list_for_each_safe(p, n, &dirci->i_new_children) {
+		struct ceph_inode_info *ci =
+			list_entry(p, struct ceph_inode_info, i_new_child);
+		__flush_create(d_find_alias(&ci->vfs_inode));
+	}
+	mutex_unlock(&mdsc->create_mutex);
 	return 0;
 }
 
@@ -1391,7 +1507,10 @@ void ceph_inode_writeback(struct work_struct *work)
 	struct inode *inode = &ci->vfs_inode;
 
 	dout(10, "writeback %p\n", inode);
-	filemap_fdatawrite(&inode->i_data);
+	if (S_ISDIR(inode->i_mode))
+		flush_child_creates(inode);
+	else
+		filemap_fdatawrite(&inode->i_data);
 	iput(inode);
 }
 
@@ -1597,7 +1716,7 @@ static int ceph_setattr_chown(struct dentry *dentry, struct iattr *attr)
 	}
 	req->r_args.chown.mask = cpu_to_le32(mask);
 	ceph_release_caps(inode, CEPH_CAP_AUTH_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	ceph_mdsc_put_request(req);
 	dout(10, "chown result %d\n", err);
 	return err;
@@ -1629,7 +1748,7 @@ static int ceph_setattr_chmod(struct dentry *dentry, struct iattr *attr)
 		return PTR_ERR(req);
 	req->r_args.chmod.mode = cpu_to_le32(attr->ia_mode);
 	ceph_release_caps(inode, CEPH_CAP_AUTH_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	ceph_mdsc_put_request(req);
 	dout(10, "chmod result %d\n", err);
 	return err;
@@ -1697,7 +1816,7 @@ static int ceph_setattr_time(struct dentry *dentry, struct iattr *attr)
 		req->r_args.utime.mask |= cpu_to_le32(CEPH_UTIME_MTIME);
 
 	ceph_release_caps(inode, CEPH_CAP_FILE_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	ceph_mdsc_put_request(req);
 	dout(10, "utime result %d\n", err);
 	return err;
@@ -1740,7 +1859,7 @@ static int ceph_setattr_size(struct dentry *dentry, struct iattr *attr)
 	req->r_args.truncate.length = cpu_to_le64(attr->ia_size);
 	req->r_args.truncate.old_length = cpu_to_le64(inode->i_size);
 	//ceph_release_caps(inode, CEPH_CAP_FILE_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	ceph_mdsc_put_request(req);
 	dout(10, "truncate result %d\n", err);
 	__ceph_do_pending_vmtruncate(inode);
@@ -2155,7 +2274,7 @@ int ceph_setxattr(struct dentry *dentry, const char *name,
 	req->r_request->hdr.data_off = cpu_to_le16(0);
 
 	ceph_release_caps(inode, CEPH_CAP_XATTR_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	ceph_mdsc_put_request(req);
 
 out:
@@ -2192,7 +2311,7 @@ int ceph_removexattr(struct dentry *dentry, const char *name)
 		return PTR_ERR(req);
 
 	ceph_release_caps(inode, CEPH_CAP_XATTR_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	ceph_mdsc_put_request(req);
 	return err;
 }

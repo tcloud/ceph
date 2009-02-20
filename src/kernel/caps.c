@@ -975,6 +975,8 @@ static void __take_cap_refs(struct ceph_inode_info *ci, int got)
 		dout(30, "__take_cap_refs %p wrbuffer %d -> %d (?)\n",
 		     &ci->vfs_inode, ci->i_wrbuffer_ref-1, ci->i_wrbuffer_ref);
 	}
+	if (got & CEPH_CAP_FILE_EXCL)
+		ci->i_excl_ref++;
 }
 
 /*
@@ -1086,6 +1088,9 @@ void ceph_put_cap_refs(struct ceph_inode_info *ci, int had)
 				}
 			}
 		}
+	if (had & CEPH_CAP_FILE_EXCL)
+		if (--ci->i_excl_ref == 0)
+			last++;
 	spin_unlock(&inode->i_lock);
 
 	dout(30, "put_cap_refs %p had %s %s\n", inode, ceph_cap_string(had),
@@ -1323,7 +1328,7 @@ start:
 	if (cap->issued & ~newcaps) {
 		dout(10, "revocation: %s -> %s\n", ceph_cap_string(cap->issued),
 		     ceph_cap_string(newcaps));
-		if ((used & ~newcaps) & CEPH_CAP_FILE_WRBUFFER) {
+		if ((used & ~newcaps) & (CEPH_CAP_FILE_WRBUFFER|CEPH_CAP_FILE_EXCL)) {
 			writeback = 1; /* will delay ack */
 		} else if (dirty & ~newcaps)
 			reply = 2;     /* initiate writeback in check_caps */

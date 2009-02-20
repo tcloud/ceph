@@ -127,7 +127,7 @@ int ceph_open(struct inode *inode, struct file *file)
 		err = PTR_ERR(req);
 		goto out;
 	}
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	if (!err)
 		err = ceph_init_file(inode, file, req->r_fmode);
 	ceph_mdsc_put_request(req);
@@ -173,7 +173,7 @@ struct dentry *ceph_lookup_open(struct inode *dir, struct dentry *dentry,
 	    (ceph_caps_issued(ceph_inode(dir)) & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
 	req->r_locked_dir = dir;           /* caller holds dir->i_mutex */
-	err = ceph_mdsc_do_request(mdsc, parent_inode, req);
+	err = ceph_mdsc_do_request(mdsc, req, parent_inode);
 	dentry = ceph_finish_lookup(req, dentry, err);
 	if (!err)
 		err = ceph_init_file(req->r_last_inode, file, req->r_fmode);

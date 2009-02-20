@@ -329,6 +329,7 @@ bool SafeTimer::cancel_event(Context *c)
     canceled[c] = scheduled[c];
   }
   scheduled.erase(c);
+  return true;
 }
 
 void SafeTimer::cancel_all()

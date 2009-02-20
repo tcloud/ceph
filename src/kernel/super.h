@@ -217,6 +217,7 @@ struct ceph_inode_frag {
 #define CEPH_I_COMPLETE  1  /* we have complete directory cached */
 #define CEPH_I_READDIR   2  /* no dentries trimmed since readdir start */
 #define CEPH_I_NEW       4  /* not yet created on mds */
+#define CEPH_I_CREATING  8  /* create request submitted to mds */
 
 struct ceph_inode_info {
 	struct ceph_vino i_vino;   /* ceph ino + snap */
@@ -278,7 +279,7 @@ struct ceph_inode_info {
 
 	/* held references to caps */
 	int i_rd_ref, i_rdcache_ref, i_wr_ref;
-	int i_wrbuffer_ref, i_wrbuffer_ref_head;
+	int i_wrbuffer_ref, i_wrbuffer_ref_head, i_excl_ref;
 	u32 i_rdcache_gen;      /* we increment this each time we get RDCACHE.
 				   If it's non-zero, we _may_ have cached
 				   pages. */
@@ -296,6 +297,7 @@ struct ceph_inode_info {
 
 	struct list_head i_listener_list; /* requests we pend on */
 	spinlock_t i_listener_lock;
+	struct list_head i_new_child, i_new_children; /* protected by i_mutex */
 
 	struct inode vfs_inode; /* at end */
 };
@@ -453,14 +455,16 @@ static inline int __ceph_caps_used(struct ceph_inode_info *ci)
 {
 	int used = 0;
 	if (ci->i_rd_ref)
-		used |= CEPH_CAP_GRD;
+		used |= CEPH_CAP_FILE_RD;
 	if (ci->i_rdcache_ref || ci->i_rdcache_gen)
-		used |= CEPH_CAP_GRDCACHE;
+		used |= CEPH_CAP_FILE_RDCACHE;
 	if (ci->i_wr_ref)
-		used |= CEPH_CAP_GWR;
+		used |= CEPH_CAP_FILE_WR;
 	if (ci->i_wrbuffer_ref)
-		used |= CEPH_CAP_GWRBUFFER;
-	return CEPH_CAP_FILE(used);
+		used |= CEPH_CAP_FILE_WRBUFFER;
+	if (ci->i_excl_ref)
+		used |= CEPH_CAP_FILE_EXCL;
+	return used;
 }
 
 /*
@@ -682,6 +686,7 @@ extern struct inode *ceph_alloc_inode(struct super_block *sb);
 extern void ceph_destroy_inode(struct inode *inode);
 extern int ceph_async_create(struct inode *dir, struct dentry *dentry,
 			     int issued, int mode, const char *symdest);
+extern int ceph_flush_create(struct dentry *dentry);
 
 extern struct inode *ceph_get_inode(struct super_block *sb,
 				    struct ceph_vino vino);

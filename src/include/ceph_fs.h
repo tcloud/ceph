@@ -729,6 +729,7 @@ static inline const char *ceph_mds_op_name(int op)
 	case CEPH_MDS_OP_MKDIR: return "mkdir";
 	case CEPH_MDS_OP_RMDIR: return "rmdir";
 	case CEPH_MDS_OP_SYMLINK: return "symlink";
+	case CEPH_MDS_OP_CREATE: return "create";
 	case CEPH_MDS_OP_OPEN: return "open";
 	case CEPH_MDS_OP_TRUNCATE: return "truncate";
 	case CEPH_MDS_OP_LTRUNCATE: return "ltruncate";
@@ -980,7 +981,7 @@ static inline int ceph_flags_to_mode(int flags)
 #define CEPH_CAP_ANY_FILE_WR (CEPH_CAP_FILE_WR|CEPH_CAP_FILE_WRBUFFER)
 #define CEPH_CAP_ANY_WR   (CEPH_CAP_ANY_EXCL | CEPH_CAP_ANY_FILE_WR)
 
-#define CEPH_CAP_ANY      (CEPH_CAP_ANY_WR|CEPH_CAP_ANY_RD)
+#define CEPH_CAP_ANY      (CEPH_CAP_PIN|CEPH_CAP_ANY_WR|CEPH_CAP_ANY_RD)
 
 /*
  * these cap bits time out, if no others are held and nothing is

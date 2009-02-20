@@ -90,7 +90,7 @@ nextfrag:
 		req->r_direct_hash = frag_value(frag);
 		req->r_direct_is_hash = true;
 		req->r_args.readdir.frag = cpu_to_le32(frag);
-		err = ceph_mdsc_do_request(mdsc, NULL, req);
+		err = ceph_mdsc_do_request(mdsc, req, NULL);
 		if (err < 0) {
 			ceph_mdsc_put_request(req);
 			return err;
@@ -312,7 +312,7 @@ struct dentry *ceph_do_lookup(struct super_block *sb, struct dentry *dentry,
 		return ERR_PTR(PTR_ERR(req));
 	req->r_args.stat.mask = cpu_to_le32(mask);
 	req->r_locked_dir = dentry->d_parent->d_inode;  /* by the VFS */
-	err = ceph_mdsc_do_request(mdsc, NULL, req);
+	err = ceph_mdsc_do_request(mdsc, req, NULL);
 	dentry = ceph_finish_lookup(req, dentry, err);
 	ceph_mdsc_put_request(req);  /* will dput(dentry) */
 	dout(20, "do_lookup result=%p\n", dentry);
@@ -378,7 +378,7 @@ static int ceph_mknod(struct inode *dir, struct dentry *dentry,
 	req->r_args.mknod.rdev = cpu_to_le32(rdev);
 	if ((issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, dir, req);
+	err = ceph_mdsc_do_request(mdsc, req, dir);
 	if (!err && req->r_reply_info.trace_numd == 0) {
 		/*
 		 * no trace.  do lookup, in case we are called from create
@@ -450,7 +450,7 @@ static int ceph_symlink(struct inode *dir, struct dentry *dentry,
 	req->r_locked_dir = dir;
 	if ((issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, dir, req);
+	err = ceph_mdsc_do_request(mdsc, req, dir);
 	ceph_mdsc_put_request(req);
 	if (err)
 		d_drop(dentry);
@@ -500,7 +500,7 @@ static int ceph_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 
 	if ((issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, dir, req);
+	err = ceph_mdsc_do_request(mdsc, req, dir);
 	ceph_mdsc_put_request(req);
 	if (err < 0)
 		d_drop(dentry);
@@ -531,7 +531,7 @@ static int ceph_link(struct dentry *old_dentry, struct inode *dir,
 
 	if ((ceph_caps_issued(ceph_inode(dir)) & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, dir, req);
+	err = ceph_mdsc_do_request(mdsc, req, dir);
 	if (err) {
 		d_drop(dentry);
 	} else if (req->r_reply_info.trace_numd == 0) {
@@ -590,7 +590,7 @@ static int ceph_unlink(struct inode *dir, struct dentry *dentry)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
 	ceph_mdsc_lease_release(mdsc, dir, dentry, CEPH_LOCK_DN);
 	ceph_release_caps(inode, CEPH_CAP_LINK_RDCACHE);
-	err = ceph_mdsc_do_request(mdsc, dir, req);
+	err = ceph_mdsc_do_request(mdsc, req, dir);
 	ceph_mdsc_put_request(req);
 	return err;
 }
@@ -623,7 +623,7 @@ static int ceph_rename(struct inode *old_dir, struct dentry *old_dentry,
 	if ((ceph_caps_issued(ceph_inode(new_dir)) & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(new_dir, CEPH_CAP_FILE_RDCACHE);
 	ceph_mdsc_lease_release(mdsc, new_dir, new_dentry, CEPH_LOCK_DN);
-	err = ceph_mdsc_do_request(mdsc, old_dir, req);
+	err = ceph_mdsc_do_request(mdsc, req, old_dir);
 	if (!err && req->r_reply_info.trace_numd == 0) {
 		/*
 		 * no trace

@@ -736,7 +736,7 @@ static int request_prealloc(struct ceph_mds_client *mdsc)
 		return PTR_ERR(req);
 	req->r_args.prealloc.num = cpu_to_le32(want);
 	req->r_callback = prealloc_completion;
-	ceph_mdsc_submit_request(mdsc, req);
+	ceph_mdsc_submit_request(mdsc, req, NULL);
 	return 0;
 }
 
@@ -1344,11 +1344,12 @@ static void kick_requests(struct ceph_mds_client *mdsc, int mds, int all)
 }
 
 void ceph_mdsc_submit_request(struct ceph_mds_client *mdsc,
-			      struct ceph_mds_request *req)
+			      struct ceph_mds_request *req,
+			      struct inode *listener)
 {
 	dout(30, "submit_request on %p\n", req);
 	mutex_lock(&mdsc->mutex);
-	__register_request(mdsc, req, NULL);
+	__register_request(mdsc, req, listener);
 	__do_request(mdsc, req);
 	mutex_unlock(&mdsc->mutex);
 }
@@ -1358,8 +1359,8 @@ void ceph_mdsc_submit_request(struct ceph_mds_client *mdsc,
  * session setup, forwarding, retry details.
  */
 int ceph_mdsc_do_request(struct ceph_mds_client *mdsc,
-			 struct inode *listener,
-			 struct ceph_mds_request *req)
+			 struct ceph_mds_request *req,
+			 struct inode *listener)
 {
 	int err;
 
@@ -2261,6 +2262,7 @@ void ceph_mdsc_init(struct ceph_mds_client *mdsc, struct ceph_client *client)
 	spin_lock_init(&mdsc->cap_delay_lock);
 	INIT_LIST_HEAD(&mdsc->snap_flush_list);
 	spin_lock_init(&mdsc->snap_flush_lock);
+	mutex_init(&mdsc->create_mutex);
 }
 
 /*

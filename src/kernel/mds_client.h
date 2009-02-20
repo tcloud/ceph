@@ -244,6 +244,8 @@ struct ceph_mds_client {
 	spinlock_t       cap_delay_lock;   /* protects cap_delay_list */
 	struct list_head snap_flush_list;  /* cap_snaps ready to flush */
 	spinlock_t       snap_flush_lock;
+
+	struct mutex create_mutex;  /* for doing async CREATE requests */
 };
 
 extern const char *ceph_mds_op_name(int op);
@@ -297,10 +299,11 @@ ceph_mdsc_create_request(struct ceph_mds_client *mdsc, int op,
 			 const char *path1, const char *path2,
 			 int mode);
 extern void ceph_mdsc_submit_request(struct ceph_mds_client *mdsc,
-				     struct ceph_mds_request *req);
+				     struct ceph_mds_request *req,
+				     struct inode *listener);
 extern int ceph_mdsc_do_request(struct ceph_mds_client *mdsc,
-				struct inode *listener,
-				struct ceph_mds_request *req);
+				struct ceph_mds_request *req,
+				struct inode *listener);
 extern void ceph_mdsc_put_request(struct ceph_mds_request *req);
 
 extern void ceph_mdsc_pre_umount(struct ceph_mds_client *mdsc);
