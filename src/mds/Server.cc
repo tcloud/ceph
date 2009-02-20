@@ -1434,31 +1434,37 @@ CDentry* Server::prepare_null_dentry(MDRequest *mdr, CDir *dir, const string& dn
  *
  * create a new inode.  set c/m/atime.  hit dir pop.
  */
-CInode* Server::prepare_new_inode(MDRequest *mdr, CDir *dir, inodeno_t useino) 
+CInode* Server::prepare_new_inode(MDRequest *mdr, CDir *dir, inodeno_t useino, bool clientprealloc) 
 {
   CInode *in = new CInode(mdcache);
   
-  // assign ino
-  if (mdr->session->prealloc_inos.size()) {
-    mdr->used_prealloc_ino = 
-      in->inode.ino = mdr->session->take_ino(useino);  // prealloc -> used
-    mds->sessionmap.projected++;
-    dout(10) << "prepare_new_inode used_prealloc " << mdr->used_prealloc_ino
-	     << " (" << mdr->session->prealloc_inos.size() << " left)"
-	     << dendl;
-  } else {
-    mdr->alloc_ino = 
-      in->inode.ino = mds->inotable->project_alloc_id();
-    dout(10) << "prepare_new_inode alloc " << mdr->alloc_ino << dendl;
-  }
+  if (clientprealloc) {
+    // we need to journal the client prealloc use
+#warning write me
 
-  if (useino && useino != in->inode.ino) {
-    dout(0) << "WARNING: client specified " << useino << " and i allocated " << in->inode.ino << dendl;
-    stringstream ss;
-    ss << mdr->client_request->get_orig_source() << " specified ino " << useino << " but mds" << mds->whoami
-       << " allocated " << in->inode.ino;
-    mds->logclient.log(LOG_ERROR, ss);
-    assert(0); // just for now.
+  } else {
+    // assign ino
+    if (mdr->session->prealloc_inos.size()) {
+      mdr->used_prealloc_ino = 
+      in->inode.ino = mdr->session->take_ino(useino);  // prealloc -> used
+      mds->sessionmap.projected++;
+      dout(10) << "prepare_new_inode used_prealloc " << mdr->used_prealloc_ino
+	       << " (" << mdr->session->prealloc_inos.size() << " left)"
+	       << dendl;
+    } else {
+      mdr->alloc_ino = 
+	in->inode.ino = mds->inotable->project_alloc_id();
+      dout(10) << "prepare_new_inode alloc " << mdr->alloc_ino << dendl;
+    }
+    
+    if (useino && useino != in->inode.ino) {
+      dout(0) << "WARNING: client specified " << useino << " and i allocated " << in->inode.ino << dendl;
+      stringstream ss;
+      ss << mdr->client_request->get_orig_source() << " specified ino " << useino << " but mds" << mds->whoami
+	 << " allocated " << in->inode.ino;
+      mds->logclient.log(LOG_ERROR, ss);
+      assert(0); // just for now.
+    }
   }
     
   int got = g_conf.mds_client_prealloc_inos - mdr->session->get_num_projected_prealloc_inos();
@@ -2236,6 +2242,14 @@ void Server::handle_client_readdir(MDRequest *mdr)
     reply_request(mdr, -ENOTDIR);
     return;
   }
+  
+  // rdlock file, dft
+  set<SimpleLock*> rdlocks = mdr->rdlocks;
+  set<SimpleLock*> wrlocks = mdr->wrlocks;
+  set<SimpleLock*> xlocks = mdr->xlocks;
+  rdlocks.insert(&diri->filelock);
+  if (!mds->locker->acquire_locks(mdr, rdlocks, wrlocks, xlocks))
+    return;
 
   // which frag?
   frag_t fg = (__u32)req->head.args.readdir.frag;
@@ -2570,7 +2584,7 @@ void Server::handle_client_create(MDRequest *mdr)
   mdr->now = g_clock.real_now();
   snapid_t follows = dn->get_dir()->inode->find_snaprealm()->get_newest_seq();
 
-  CInode *newi = prepare_new_inode(mdr, dn->get_dir(), inodeno_t(req->head.ino));
+  CInode *newi = prepare_new_inode(mdr, dn->get_dir(), inodeno_t(req->head.ino), true);
   assert(newi);
 
   dn->push_projected_linkage(newi);
