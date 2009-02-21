@@ -1440,8 +1440,7 @@ CInode* Server::prepare_new_inode(MDRequest *mdr, CDir *dir, inodeno_t useino, b
   
   if (clientprealloc) {
     // we need to journal the client prealloc use
-#warning write me
-
+    mdr->used_client_alloc = useino;
   } else {
     // assign ino
     if (mdr->session->prealloc_inos.size()) {
@@ -1501,7 +1500,8 @@ void Server::journal_allocated_inos(MDRequest *mdr, EMetaBlob *blob)
 		      mdr->prealloc_inos,
 		      mdr->client_request->get_orig_source(),
 		      mds->sessionmap.projected,
-		      mds->inotable->get_projected_version());
+		      mds->inotable->get_projected_version(),
+		      mdr->used_client_alloc);
 }
 
 void Server::apply_allocated_inos(MDRequest *mdr)

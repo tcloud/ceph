@@ -332,6 +332,8 @@ private:
   inodeno_t used_preallocated_ino;    //            session
   entity_name_t client_name;          //            session
 
+  inodeno_t used_client_alloc;
+
   // inodes i've truncated
   list<inodeno_t> truncate_start;        // start truncate 
   map<inodeno_t,__u64> truncate_finish;  // finished truncate (started in segment blah)
@@ -352,6 +354,7 @@ private:
     ::encode(preallocated_inos, bl);
     ::encode(client_name, bl);
     ::encode(inotablev, bl);
+    ::encode(used_client_alloc, bl);
     ::encode(sessionmapv, bl);
     ::encode(truncate_start, bl);
     ::encode(truncate_finish, bl);
@@ -368,6 +371,7 @@ private:
     ::decode(preallocated_inos, bl);
     ::decode(client_name, bl);
     ::decode(inotablev, bl);
+    ::decode(used_client_alloc, bl);
     ::decode(sessionmapv, bl);
     ::decode(truncate_start, bl);
     ::decode(truncate_finish, bl);
@@ -410,13 +414,15 @@ private:
 		     inodeno_t used_prealloc,
 		     deque<inodeno_t>& prealloc,
 		     entity_name_t client,
-		     version_t sv, version_t iv) {
+		     version_t sv, version_t iv,
+		     inodeno_t client_alloc) {
     allocated_ino = alloc;
     used_preallocated_ino = used_prealloc;
     preallocated_inos = prealloc;
     client_name = client;
     sessionmapv = sv;
     inotablev = iv;
+    used_client_alloc = client_alloc;
   }
 
   void add_truncate_start(inodeno_t ino) {

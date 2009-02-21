@@ -257,6 +257,7 @@ struct MDRequest : public Mutation {
 
   inodeno_t alloc_ino, used_prealloc_ino;  
   deque<inodeno_t> prealloc_inos;
+  inodeno_t used_client_alloc;
 
   Capability *cap;
   int snap_caps;
