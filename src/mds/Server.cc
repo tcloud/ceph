@@ -1440,7 +1440,9 @@ CInode* Server::prepare_new_inode(MDRequest *mdr, CDir *dir, inodeno_t useino, b
   
   if (clientprealloc) {
     // we need to journal the client prealloc use
+#warning write me
     mdr->used_client_alloc = useino;
+    in->inode.ino = useino;
   } else {
     // assign ino
     if (mdr->session->prealloc_inos.size()) {
@@ -2582,7 +2584,8 @@ void Server::handle_client_create(MDRequest *mdr)
   if (!dn) return;
 
   mdr->now = g_clock.real_now();
-  snapid_t follows = dn->get_dir()->inode->find_snaprealm()->get_newest_seq();
+  SnapRealm *realm = dn->get_dir()->inode->find_snaprealm();
+  snapid_t follows = realm->get_newest_seq();
 
   CInode *newi = prepare_new_inode(mdr, dn->get_dir(), inodeno_t(req->head.ino), true);
   assert(newi);
@@ -2605,18 +2608,29 @@ void Server::handle_client_create(MDRequest *mdr)
 
   newi->symlink = req->get_path2();
 
+  CDir *newdir = 0;
+  if (newi->inode.is_dir()) {
+    // ...and that new dir is empty.
+    newdir = newi->get_or_open_dirfrag(mds->mdcache, frag_t());
+    newdir->mark_complete();
+    newdir->pre_dirty();
+  }
+
   dn->first = newi->first = follows+1;
 
-  // prepare finisher
+  // journal
   mdr->ls = mdlog->get_current_segment();
   EUpdate *le = new EUpdate(mdlog, "create");
   le->metablob.add_client_req(req->get_reqid());
   journal_allocated_inos(mdr, &le->metablob);
   mdcache->predirty_journal_parents(mdr, &le->metablob, newi, dn->get_dir(), PREDIRTY_PRIMARY|PREDIRTY_DIR, 1);
   le->metablob.add_primary_dentry(dn, true, newi);
+  if (newdir)
+    le->metablob.add_dir(newdir, true, true, true); // dirty AND complete AND new
 
+  // cap
   int client = mdr->get_client();
-  Capability *cap = newi->get_client_cap(client);
+  Capability *cap = newi->add_client_cap(client, mdr->session, &mdcache->client_rdcaps, realm);
   int keep = req->head.args.create.caps;
   cap->set_wanted(req->head.args.create.wanted);
   cap->issue(keep);
