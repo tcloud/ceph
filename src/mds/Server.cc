@@ -2641,6 +2641,9 @@ void Server::handle_client_create(MDRequest *mdr)
   newi->xattrlock.set_state((keep & CEPH_CAP_XATTR_EXCL) ? LOCK_EXCL:LOCK_SYNC);  
 
   mdlog->submit_entry(le, new C_MDS_mknod_finish(mds, mdr, dn, newi, follows), true);
+  
+  if (!dn->get_dir()->get_inode()->filelock.is_stable())
+    mdlog->flush();
 }
 
 
