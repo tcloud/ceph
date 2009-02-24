@@ -634,59 +634,37 @@ out:
 	return 0;
 }
 
+static void dump_prealloc(struct ceph_mds_client *mdsc)
+{
+	int i;
+
+	for (i = 0; i < 2; i++)
+		dout(10, "dump_prealloc %d %llx~%d\n",
+		     i, mdsc->inoq.inos[i].start, mdsc->inoq.inos[i].len);
+}
+
 /*
  * ino preallocation
  */
-static int prealloc_enqueue(struct ceph_mds_client *mdsc, u64 first, int num)
+static void prealloc_enqueue(struct ceph_mds_client *mdsc, u64 first, int num)
 {
-	int room;
-	int ret;
+	int pos;
 
 	dout(10, "prealloc_enqueue %llx~%d\n", first, num);
 	mutex_lock(&mdsc->inoq.mutex);
 
 	mdsc->inoq.requesting -= num;
 
-	room = mdsc->inoq.max - mdsc->inoq.num;
-	if (!room) {
-		/* realloc */
-		int newlen = mdsc->inoq.num ? mdsc->inoq.num*2 : 4;
-		struct ceph_ino_extent *newq =
-			kmalloc(newlen * sizeof(*newq), GFP_NOFS);
-		int a, b;
-
-		dout(20, "prealloc_enqueue realloc %d\n", newlen);
-		ret = -ENOMEM;
-		if (!newq)
-			goto out;
-		if (mdsc->inoq.head > mdsc->inoq.tail) {
-			a = mdsc->inoq.num - mdsc->inoq.head;
-			b = mdsc->inoq.tail;
-		} else {
-			a = mdsc->inoq.tail - mdsc->inoq.head;
-			b = 0;
-		}
-		memcpy(newq, mdsc->inoq.inos + mdsc->inoq.head,
-		       a*sizeof(u64));
-		if (b)
-			memcpy(newq + a, mdsc->inoq.inos, b*sizeof(*newq));
-		kfree(mdsc->inoq.inos);
-		mdsc->inoq.inos = newq;
-		mdsc->inoq.head = 0;
-		mdsc->inoq.tail = mdsc->inoq.num;
-	}
-
-	mdsc->inoq.inos[mdsc->inoq.tail].start = first;
-	mdsc->inoq.inos[mdsc->inoq.tail].len = num;
-	mdsc->inoq.num++;
+	if (mdsc->inoq.inos[0].len)
+		pos = 1;
+	else
+		pos = 0;
+	mdsc->inoq.inos[pos].start = first;
+	mdsc->inoq.inos[pos].len = num;
 	mdsc->inoq.numi += num;
-	if (mdsc->inoq.tail == mdsc->inoq.max)
-		mdsc->inoq.tail = 0;
 
-	ret = 0;
-out:
+	dump_prealloc(mdsc);
 	mutex_unlock(&mdsc->inoq.mutex);
-	return ret;
 }
 
 /*
@@ -722,8 +700,8 @@ static int request_prealloc(struct ceph_mds_client *mdsc)
 	willhave = mdsc->inoq.numi + mdsc->inoq.requesting;
 	want = max - mdsc->inoq.numi - mdsc->inoq.requesting;
 	dout(10, "request_prealloc have %d+%d=%d, target %d-%d, want %d\n",
-	     mdsc->inoq.num, mdsc->inoq.requesting, willhave, min, max, want);
-	if (willhave > min) {
+	     mdsc->inoq.numi, mdsc->inoq.requesting, willhave, min, max, want);
+	if (willhave > min || mdsc->inoq.inos[1].len > 0) {
 		mutex_unlock(&mdsc->inoq.mutex);
 		return 0;
 	}
@@ -753,18 +731,16 @@ u64 ceph_mdsc_prealloc_dequeue(struct ceph_mds_client *mdsc)
 
 	mutex_lock(&mdsc->inoq.mutex);	
 	if (mdsc->inoq.numi) {
-		r = mdsc->inoq.inos[mdsc->inoq.head].start;
-		mdsc->inoq.inos[mdsc->inoq.head].start++;
-		mdsc->inoq.inos[mdsc->inoq.head].len--;
+		r = mdsc->inoq.inos[0].start;
+		mdsc->inoq.inos[0].start++;
+		mdsc->inoq.inos[0].len--;
 		mdsc->inoq.numi--;
-		if (mdsc->inoq.inos[mdsc->inoq.head].len == 0) {
-			mdsc->inoq.num--;
-			mdsc->inoq.head++;
-			if (mdsc->inoq.head == mdsc->inoq.max)
-				mdsc->inoq.head = 0;
+		if (mdsc->inoq.inos[0].len == 0) {
+			mdsc->inoq.inos[0] = mdsc->inoq.inos[1];
+			mdsc->inoq.inos[1].len = 0;
 		}
 	}
-	if (mdsc->inoq.num < mdsc->client->mount_args.prealloc_min)
+	if (mdsc->inoq.numi < mdsc->client->mount_args.prealloc_min)
 		want_more = 1;
 	mutex_unlock(&mdsc->inoq.mutex);
 	dout(20, "prealloc_dequeue %llx\n", r);

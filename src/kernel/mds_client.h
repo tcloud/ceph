@@ -198,13 +198,13 @@ struct ceph_mds_request {
  * Ino number preallocation queue (circular buffer)
  */
 struct ceph_ino_extent {
-	u64 start, len;
+	u64 start;
+	int len;
 };
 struct ceph_ino_queue {
 	struct mutex mutex;
-	int head, tail, num, max, numi;
-	struct ceph_ino_extent *inos;
-	int requesting;
+	struct ceph_ino_extent inos[2];
+	int numi, requesting;
 };
 
 /*
