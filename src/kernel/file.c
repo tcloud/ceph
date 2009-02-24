@@ -151,8 +151,7 @@ out:
  *  path_lookup_create -> LOOKUP_OPEN|LOOKUP_CREATE
  */
 struct dentry *ceph_lookup_open(struct inode *dir, struct dentry *dentry,
-				struct nameidata *nd, int mode,
-				int locked_dir)
+				struct nameidata *nd, int mode)
 {
 	struct ceph_client *client = ceph_sb_to_client(dir->i_sb);
 	struct ceph_mds_client *mdsc = &client->mdsc;
@@ -161,16 +160,21 @@ struct dentry *ceph_lookup_open(struct inode *dir, struct dentry *dentry,
 	struct ceph_mds_request *req;
 	int err;
 	int flags = nd->intent.open.flags - 1;  /* silly vfs! */
+	int issued = ceph_caps_issued(ceph_inode(dir));
 
 	dout(5, "ceph_lookup_open dentry %p '%.*s' flags %d mode 0%o\n",
 	     dentry, dentry->d_name.len, dentry->d_name.name, flags, mode);
+
+	if (ceph_async_create(dir, dentry, issued, mode, NULL) == 0)
+		return 0;
+	ceph_pending_flush(d_find_alias(dir));
 
 	/* do the open */
 	req = prepare_open_request(dir->i_sb, dentry, flags, mode);
 	if (IS_ERR(req))
 		return ERR_PTR(PTR_ERR(req));
 	if ((flags & O_CREAT) &&
-	    (ceph_caps_issued(ceph_inode(dir)) & CEPH_CAP_FILE_EXCL) == 0)
+	    (issued & CEPH_CAP_FILE_EXCL) == 0)
 		ceph_release_caps(dir, CEPH_CAP_FILE_RDCACHE);
 	req->r_locked_dir = dir;           /* caller holds dir->i_mutex */
 	err = ceph_mdsc_do_request(mdsc, req, parent_inode);

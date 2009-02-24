@@ -480,6 +480,14 @@ static int parse_mount_args(int flags, char *options, const char *dev_name,
 	args->prealloc_max = 1024;
 	args->snapdir_name = ".snap";
 
+	args->default_layout.fl_stripe_unit = 4 << 20;
+	args->default_layout.fl_stripe_count = 1;
+	args->default_layout.fl_object_size = 4 << 20;
+	args->default_layout.fl_pg_preferred = -1;
+	args->default_layout.fl_pg_type = CEPH_PG_LAYOUT_CRUSH;
+	args->default_layout.fl_pg_size = 2;
+	args->default_layout.fl_pg_pool = 1;
+
 	/* ip1[:port1][,ip2[:port2]...]:/subdir/in/fs */
 	c = strstr(dev_name, ":/");
 	if (c == NULL)

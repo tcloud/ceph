@@ -71,6 +71,7 @@ struct ceph_mount_args {
 	int osd_timeout;
 	int prealloc_min, prealloc_max;
 	char *snapdir_name;   /* default ".snap" */
+	struct ceph_file_layout default_layout;
 };
 
 enum {
@@ -688,6 +689,13 @@ extern int ceph_async_create(struct inode *dir, struct dentry *dentry,
 			     int issued, int mode, const char *symdest);
 extern int ceph_flush_create(struct dentry *dentry);
 
+inline static void ceph_pending_flush(struct dentry *dentry)
+{
+	if (dentry && dentry->d_inode &&
+	    ceph_inode(dentry->d_inode)->i_ceph_flags & CEPH_I_NEW)
+		ceph_flush_create(dentry);
+}
+
 extern struct inode *ceph_get_inode(struct super_block *sb,
 				    struct ceph_vino vino);
 extern struct inode *ceph_get_snapdir(struct inode *parent);
@@ -758,8 +766,7 @@ extern const struct file_operations ceph_file_fops;
 extern const struct address_space_operations ceph_aops;
 extern int ceph_open(struct inode *inode, struct file *file);
 extern struct dentry *ceph_lookup_open(struct inode *dir, struct dentry *dentry,
-				       struct nameidata *nd, int mode,
-				       int locked_dir);
+				       struct nameidata *nd, int mode);
 extern int ceph_release(struct inode *inode, struct file *filp);
 
 
@@ -771,7 +778,7 @@ extern struct dentry_operations ceph_dentry_ops, ceph_snap_dentry_ops,
 
 extern struct dentry *ceph_do_lookup(struct super_block *sb,
 				     struct dentry *dentry,
-				     int mask, int on_inode, int locked_dir);
+				     int mask, int on_inode);
 extern struct dentry *ceph_finish_lookup(struct ceph_mds_request *req,
 					 struct dentry *dentry, int err);
 

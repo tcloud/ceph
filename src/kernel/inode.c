@@ -7,6 +7,7 @@
 #include <linux/kernel.h>
 #include <linux/namei.h>
 #include <linux/writeback.h>
+#include <linux/dcache.h>
 
 #include "ceph_debug.h"
 
@@ -451,6 +452,8 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 	int got;
 	int err;
 
+	BUG_ON(!mutex_is_locked(&dir->i_mutex));
+
 	if ((client->mount_args.flags & CEPH_MOUNT_ASYNCMETA) == 0)
 		return -EPERM;
 	mdsc = &client->mdsc;
@@ -483,6 +486,9 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 		if (!ci->i_symlink)
 			goto out_iput;
 		strcpy(ci->i_symlink, symdest);
+	} else {
+		ci->i_layout = client->mount_args.default_layout;
+		ci->i_max_size = ceph_file_layout_object_size(ci->i_layout);
 	}
 
 	/* add to dir child list */
@@ -497,7 +503,9 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 		inode->i_gid = current->fsgid;
 	inode->i_mode = mode;
 
-	inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_mtime = CURRENT_TIME;
+	inode->i_ctime = CURRENT_TIME;
+	inode->i_atime = CURRENT_TIME;
 	inode->i_nlink = 1;
 
 	ci->i_version = 1;
@@ -508,12 +516,19 @@ int ceph_async_create(struct inode *dir, struct dentry *dentry,
 	else
 		ci->i_rfiles = 1;
 
+	/* inherit snap realm from parent dir */
+	down_read(&mdsc->snap_rwsem);
+	ci->i_snap_realm = dirci->i_snap_realm;
+	atomic_inc(&ci->i_snap_realm->nref);
+	up_read(&mdsc->snap_rwsem);
+
 	dout(10, "async_create %p dn %p issued %s mode 0%o = %p (%llx)\n",
 	     dir, dentry, ceph_cap_string(issued), mode, inode, vino.ino);
 
 	init_inode_ops(inode);
 
-	d_add(dentry, inode);
+	dout(0, "dentry %p d_name.hash %d\n", dentry, dentry->d_name.hash);
+	d_instantiate(dentry, inode);
 	return 0;
 
 out_iput:
@@ -535,10 +550,11 @@ static void ceph_create_completion(struct ceph_mds_client *mds,
 	dout(10, "create_completion %p on %p\n", req, inode);
 	mutex_lock(&mdsc->create_mutex);
 	if (ci->i_ceph_flags & CEPH_I_NEW) {
+		struct inode *dir = d_find_alias(inode)->d_parent->d_inode;
+
 		ci->i_ceph_flags &= ~(CEPH_I_NEW|CEPH_I_CREATING);
 		list_del_init(&ci->i_new_child);
-		ceph_put_cap_refs(ceph_inode(d_find_alias(inode)->d_parent->d_inode),
-				  CEPH_CAP_FILE_EXCL);
+		ceph_put_cap_refs(ceph_inode(dir), CEPH_CAP_FILE_EXCL);
 	}
 	mutex_unlock(&mdsc->create_mutex);
 	ceph_mdsc_put_request(req);
@@ -1956,7 +1972,7 @@ int ceph_do_getattr(struct dentry *dentry, int mask)
 		}
 	}
 	ret = ceph_do_lookup(dentry->d_inode->i_sb, dentry, mask,
-			     on_inode, 0);
+			     on_inode);
 	if (IS_ERR(ret))
 		return PTR_ERR(ret);
 	if (ret)

@@ -273,7 +273,7 @@ struct dentry *ceph_finish_lookup(struct ceph_mds_request *req,
  * path built from @dentry.
  */
 struct dentry *ceph_do_lookup(struct super_block *sb, struct dentry *dentry,
-			      int mask, int on_inode, int locked_dir)
+			      int mask, int on_inode)
 {
 	struct ceph_client *client = ceph_sb_to_client(sb);
 	struct ceph_mds_client *mdsc = &client->mdsc;
@@ -339,13 +339,13 @@ static struct dentry *ceph_lookup(struct inode *dir, struct dentry *dentry,
 				    (nd->flags & LOOKUP_CONTINUE) == 0 && /* only open last component */
 				    !(nd->intent.open.flags & O_CREAT)) {
 					int mode = nd->intent.open.create_mode & ~current->fs->umask;
-					return ceph_lookup_open(dir, dentry, nd, mode, 1);
+					return ceph_lookup_open(dir, dentry, nd, mode);
 				}
 
 		}
 	}
 
-	return ceph_do_lookup(dir->i_sb, dentry, CEPH_STAT_CAP_INODE, 0, 1);
+	return ceph_do_lookup(dir->i_sb, dentry, CEPH_STAT_CAP_INODE, 0);
 }
 
 static int ceph_mknod(struct inode *dir, struct dentry *dentry,
@@ -386,7 +386,7 @@ static int ceph_mknod(struct inode *dir, struct dentry *dentry,
 		 */
 		struct dentry *d;
 		d = ceph_do_lookup(dir->i_sb, dentry, CEPH_STAT_CAP_INODE_ALL,
-				   0, 0);
+				   0);
 		if (d) {
 			/* ick.  this is untested, and inherently racey... i
 			   suppose we _did_ create the file, but it has since
@@ -413,7 +413,7 @@ static int ceph_create(struct inode *dir, struct dentry *dentry, int mode,
 
 	if (nd) {
 		BUG_ON((nd->flags & LOOKUP_OPEN) == 0);
-		dentry = ceph_lookup_open(dir, dentry, nd, mode, 0);
+		dentry = ceph_lookup_open(dir, dentry, nd, mode);
 		/* hrm, what should i do here if we get aliased? */
 		if (IS_ERR(dentry))
 			return PTR_ERR(dentry);
@@ -518,6 +518,8 @@ static int ceph_link(struct dentry *old_dentry, struct inode *dir,
 	if (ceph_snap(dir) != CEPH_NOSNAP)
 		return -EROFS;
 
+	ceph_pending_flush(dentry);
+
 	dout(5, "link in dir %p old_dentry %p dentry %p\n", dir,
 	     old_dentry, dentry);
 	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_LINK, dentry,
@@ -561,6 +563,8 @@ static int ceph_unlink(struct inode *dir, struct dentry *dentry)
 	int op = ((dentry->d_inode->i_mode & S_IFMT) == S_IFDIR) ?
 		CEPH_MDS_OP_RMDIR : CEPH_MDS_OP_UNLINK;
 	struct dentry *pathdentry = dentry;
+
+	ceph_pending_flush(dentry);
 
 	if (ceph_snap(dir) == CEPH_SNAPDIR) {
 		/* rmdir .snap/foo is RMSNAP */
@@ -608,6 +612,9 @@ static int ceph_rename(struct inode *old_dir, struct dentry *old_dentry,
 	if (ceph_snap(old_dir) != CEPH_NOSNAP ||
 	    ceph_snap(new_dir) != CEPH_NOSNAP)
 		return -EROFS;
+
+	ceph_pending_flush(old_dentry);
+	ceph_pending_flush(d_find_alias(new_dir));
 
 	dout(5, "dir_rename in dir %p dentry %p to dir %p dentry %p\n",
 	     old_dir, old_dentry, new_dir, new_dentry);
