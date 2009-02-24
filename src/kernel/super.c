@@ -484,7 +484,7 @@ static int parse_mount_args(int flags, char *options, const char *dev_name,
 	args->default_layout.fl_stripe_count = 1;
 	args->default_layout.fl_object_size = 4 << 20;
 	args->default_layout.fl_pg_preferred = -1;
-	args->default_layout.fl_pg_type = CEPH_PG_LAYOUT_CRUSH;
+	args->default_layout.fl_pg_type = CEPH_PG_TYPE_REP;
 	args->default_layout.fl_pg_size = 2;
 	args->default_layout.fl_pg_pool = 1;
 

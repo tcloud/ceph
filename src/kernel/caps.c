@@ -822,8 +822,13 @@ retry_locked:
 	 * Reschedule delayed caps release, unless we are called from
 	 * the delayed work handler (i.e. this _is_ the delayed release)
 	 */
-	if (!is_delayed)
+	if (!is_delayed) {
 		__cap_delay_requeue(mdsc, ci);
+	} else if (ci->i_ceph_flags & CEPH_I_NEW) {
+		spin_unlock(&inode->i_lock);
+		ceph_pending_flush(d_find_alias(inode));
+		return;
+	}
 
 	/*
 	 * If we no longer need to hold onto old our caps, and we may
