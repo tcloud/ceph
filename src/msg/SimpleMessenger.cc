@@ -1931,6 +1931,16 @@ Message *Rank::Pipe::read_message()
     dout(20) << "reader got front " << front.length() << dendl;
   }
 
+  int zero_map_len;
+  bufferptr zero_map_bp;
+  if (tcp_read( sd, (char *)&zero_map_len, 4 ) < 0)
+    return 0;
+  if (zero_map_len) {
+    zero_map_bp = buffer::create(zero_map_len);
+    if (tcp_read( sd, zero_map_bp.c_str(), zero_map_len ) < 0) 
+      return 0;
+  }
+
   // read data
   bufferlist data;
   unsigned data_len = le32_to_cpu(header.data_len);
@@ -2074,6 +2084,9 @@ int Rank::Pipe::write_message(Message *m)
   m->calc_header_crc();
 
   bufferlist blist = m->get_payload();
+
+  int zero_map_len = 0;
+  blist.append((char *)&zero_map_len, 4);
   blist.append(m->get_data());
   
   dout(20)  << "write_message " << m << " to " << header.dst << dendl;

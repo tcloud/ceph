@@ -118,6 +118,7 @@ struct ceph_msg {
 	atomic_t nref;
 	bool front_is_vmalloc;
 	bool more_to_follow;
+	char *zero_map;
 };
 
 struct ceph_msg_pos {
@@ -203,7 +204,7 @@ struct ceph_connection {
 					    out_sent) */
 	struct ceph_msg_pos out_msg_pos;
 
-	struct kvec out_kvec[6],         /* sending header/footer data */
+	struct kvec out_kvec[7],         /* sending header/footer data */
 		*out_kvec_cur;
 	int out_kvec_left;   /* kvec's left in out_kvec */
 	int out_kvec_bytes;  /* total bytes left */
