@@ -274,6 +274,7 @@ extern const char *ceph_mds_state_name(int s);
 #define CEPH_LOCK_INEST       256   /* mds internal */
 #define CEPH_LOCK_IXATTR      512
 #define CEPH_LOCK_INO         2048  /* immutable inode bits; not a lock */
+#define CEPH_LOCK_IFLOCK      4096  /* advisory file locks */
 
 /* client_session ops */
 enum {

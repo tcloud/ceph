@@ -330,6 +330,7 @@ private:
     xattrlock(this, &xattrlock_type),
     snaplock(this, &snaplock_type),
     nestlock(this, &nestlock_type),
+    flocklock(this, &flocklock_type),
     loner_cap(-1), want_loner_cap(-1)
   {
     g_num_ino++;
@@ -500,6 +501,7 @@ public:
   static LockType xattrlock_type;
   static LockType snaplock_type;
   static LockType nestlock_type;
+  static LockType flocklock_type;
 
   LocalLock  versionlock;
   SimpleLock authlock;
@@ -509,6 +511,7 @@ public:
   SimpleLock xattrlock;
   SimpleLock snaplock;
   ScatterLock nestlock;
+  SimpleLock flocklock;
 
   SimpleLock* get_lock(int type) {
     switch (type) {
@@ -519,6 +522,7 @@ public:
     case CEPH_LOCK_IXATTR: return &xattrlock;
     case CEPH_LOCK_ISNAP: return &snaplock;
     case CEPH_LOCK_INEST: return &nestlock;
+    case CEPH_LOCK_IFLOCK: return &flocklock;
     }
     return 0;
   }
