@@ -1756,6 +1756,9 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
       }
     }
 
+    // FIXME: hack for force update
+    stop = false;
+
     if (!stop &&
 	mut->wrlocks.count(&pin->nestlock) == 0 &&
 	(!pin->can_auth_pin() ||

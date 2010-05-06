@@ -1872,7 +1872,7 @@ void Locker::kick_cap_releases(MDRequest *mdr)
   }
 }
 
-
+#if 0
 static __u64 calc_bounding(__u64 t)
 {
   t |= t >> 1;
@@ -1883,6 +1883,7 @@ static __u64 calc_bounding(__u64 t)
   t |= t >> 32;
   return t + 1;
 }
+#endif
 
 /*
  * update inode based on cap flush|flushsnap|wanted.
@@ -1902,10 +1903,12 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   inode_t *latest = in->get_projected_inode();
 
   // increase or zero max_size?
-  __u64 size = m->get_size();
+  //__u64 size = m->get_size();
   bool change_max = false;
   uint64_t old_max = latest->client_ranges.count(client) ? latest->client_ranges[client].last : 0;
   uint64_t new_max = old_max;
+  uint64_t quota = 0;
+  uint64_t rbytes = 0;
   
   if (in->is_file()) {
     if ((cap->issued() | cap->wanted()) & CEPH_CAP_ANY_FILE_WR) {
@@ -1913,14 +1916,35 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	dout(10) << "client requests file_max " << m->get_max_size()
 		 << " > max " << old_max << dendl;
 	change_max = true;
-	new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
-      } else {
-	//new_max = ROUND_UP_TO((size+1)<<1, latest->get_layout_size_increment());
-	new_max = calc_bounding(size * 2);
-	if (new_max > old_max)
-	  change_max = true;
-	else
-	  new_max = old_max;
+
+        // check folder quota
+        {
+          CDentry *parent_dn = in->get_projected_parent_dn();
+
+          while (parent_dn != NULL) {
+            CInode *parent_in = parent_dn->get_dir()->get_inode();
+            map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
+            if (xattrs->find("user.quota") != xattrs->end()) {
+              quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
+              rbytes = (uint64_t) parent_in->get_projected_inode()->rstat.rbytes;
+              break;
+            }
+            parent_dn = parent_in->get_projected_parent_dn();
+          }  
+        }
+
+        //new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
+        new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
+
+        if (quota > 0) {
+          dout(10) << "check available quota: quota=" << quota << " size=" << rbytes << dendl;
+          if (rbytes > quota || new_max - old_max > quota - rbytes) {
+            dout(10) << "out of quota: requested=" << new_max - old_max << " remain=" << quota-rbytes << dendl;
+            new_max = old_max;
+          }
+        } else {
+          dout(10) << "no quota limit" << dendl;
+        }
       }
     } else {
       if (old_max) {
