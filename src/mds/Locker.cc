@@ -1916,35 +1916,8 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	dout(10) << "client requests file_max " << m->get_max_size()
 		 << " > max " << old_max << dendl;
 	change_max = true;
-
-        // check folder quota
-        {
-          CDentry *parent_dn = in->get_projected_parent_dn();
-
-          while (parent_dn != NULL) {
-            CInode *parent_in = parent_dn->get_dir()->get_inode();
-            map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
-            if (xattrs->find("user.quota") != xattrs->end()) {
-              quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
-              rbytes = (uint64_t) parent_in->get_projected_inode()->rstat.rbytes;
-              break;
-            }
-            parent_dn = parent_in->get_projected_parent_dn();
-          }  
-        }
-
         //new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
         new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
-
-        if (quota > 0) {
-          dout(10) << "check available quota: quota=" << quota << " size=" << rbytes << dendl;
-          if (rbytes > quota || new_max - old_max > quota - rbytes) {
-            dout(10) << "out of quota: requested=" << new_max - old_max << " remain=" << quota-rbytes << dendl;
-            new_max = old_max;
-          }
-        } else {
-          dout(10) << "no quota limit" << dendl;
-        }
       }
     } else {
       if (old_max) {
@@ -2035,6 +2008,33 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
     }
   }
   if (change_max) {
+    // check folder quota
+    {
+      CDentry *parent_dn = in->get_projected_parent_dn();
+
+      while (parent_dn != NULL) {
+        CInode *parent_in = parent_dn->get_dir()->get_inode();
+        map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
+        if (xattrs->find("user.quota") != xattrs->end()) {
+          quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
+          rbytes = (uint64_t) parent_in->get_projected_inode()->rstat.rbytes;
+          rbytes += m->get_size() - latest->size; // add size diff of this cap update
+          break;
+        }
+        parent_dn = parent_in->get_projected_parent_dn();
+      }  
+    }
+
+    if (quota > 0) {
+      dout(10) << "check available quota: quota=" << quota << " size=" << rbytes << dendl;
+      if (rbytes > quota || new_max - old_max > quota - rbytes) {
+        dout(10) << "out of quota: requested=" << new_max - old_max << " remain=" << quota-rbytes << dendl;
+        new_max = old_max;
+      }
+    } else {
+      dout(10) << "no quota limit" << dendl;
+    }
+
     dout(7) << "  max_size " << old_max << " -> " << new_max
 	    << " for " << *in << dendl;
     if (new_max) {
