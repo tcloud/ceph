@@ -2008,8 +2008,8 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
     }
   }
   if (change_max) {
-    // check folder quota
-    {
+    if (new_max > old_max) {
+      // check folder quota
       CDentry *parent_dn = in->get_projected_parent_dn();
 
       while (parent_dn != NULL) {
@@ -2023,16 +2023,16 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
         }
         parent_dn = parent_in->get_projected_parent_dn();
       }  
-    }
 
-    if (quota > 0) {
-      dout(10) << "check available quota: quota=" << quota << " size=" << rbytes << dendl;
-      if (rbytes > quota || new_max - old_max > quota - rbytes) {
-        dout(10) << "out of quota: requested=" << new_max - old_max << " remain=" << quota-rbytes << dendl;
-        new_max = old_max;
+      if (quota > 0) {
+        dout(10) << "check available quota: quota=" << quota << " rbytes=" << rbytes << dendl;
+        if (rbytes > quota || new_max - old_max > quota - rbytes) {
+          dout(10) << "out of quota: requested=" << new_max - old_max << dendl;
+          new_max = old_max;
+        }
+      } else {
+        dout(10) << "no quota limit" << dendl;
       }
-    } else {
-      dout(10) << "no quota limit" << dendl;
     }
 
     dout(7) << "  max_size " << old_max << " -> " << new_max
