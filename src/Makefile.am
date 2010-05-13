@@ -102,6 +102,10 @@ bin_PROGRAMS += psim
 
 endif
 
+#folder quota
+cfolder_quota_SOURCES = cfolder_quota.cc
+cfolder_quota_LDADD =
+bin_PROGRAMS += cfolder_quota
 
 ##########
 BUILT_SOURCES =
