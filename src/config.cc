@@ -552,6 +552,7 @@ static struct config_option config_optionsp[] = {
 	OPTION(bdev_debug_check_io_overlap, 0, OPT_BOOL, true),  // [DEBUG] check for any pending io overlaps
 	OPTION(bdev_fake_mb, 0, OPT_INT, 0),
 	OPTION(bdev_fake_max_mb, 0, OPT_INT, 0),
+	OPTION(folder_quota, 0, OPT_INT, 0),
 };
 
 bool conf_set_conf_val(void *field, opt_type_t type, const char *val)

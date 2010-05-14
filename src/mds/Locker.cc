@@ -1898,6 +1898,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	   << " issued " << ccap_string(cap->issued())
 	   << " wanted " << ccap_string(cap->wanted())
 	   << " on " << *in << dendl;
+  dout(10) << "folder_quota:" << g_conf.folder_quota << dendl;
   assert(in->is_auth());
   client_t client = m->get_source().num();
   inode_t *latest = in->get_projected_inode();

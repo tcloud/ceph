@@ -381,6 +381,7 @@ struct md_config_t {
   bool  bdev_debug_check_io_overlap;
   int   bdev_fake_mb;
   int   bdev_fake_max_mb;
+  int folder_quota;
 
 #ifdef USE_OSBDB
   bool bdbstore;
