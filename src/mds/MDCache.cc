@@ -1820,6 +1820,7 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
   bool primary_dn = flags & PREDIRTY_PRIMARY;
   bool do_parent_mtime = flags & PREDIRTY_DIR;
   bool shallow = flags & PREDIRTY_SHALLOW;
+  bool enable_folder_quota = g_conf->folder_quota;
 
   assert(mds->mdlog->entry_is_open());
 
@@ -1959,6 +1960,10 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
 	stop = true;
       }
     }
+
+    // FIXME: hack for force update
+    if (enable_folder_quota)
+      stop = false;
 
     if (!stop &&
 	mut->wrlocks.count(&pin->nestlock) == 0 &&

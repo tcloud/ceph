@@ -165,6 +165,7 @@ private:
   changed_set_t changed;
 
 public:
+  int folder_quota;
   std::string host;
 
   int num_client;
