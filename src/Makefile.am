@@ -208,6 +208,11 @@ test_libhadoopcephfs_build_CXXFLAGS = $(AM_CXXFLAGS)
 bin_DEBUGPROGRAMS += test_libhadoopcephfs_build
 endif
 
+#folder quota
+cfolder_quota_SOURCES = cfolder_quota.cc
+cfolder_quota_LDADD =
+bin_PROGRAMS += cfolder_quota
+
 ##########
 BUILT_SOURCES =
 lib_LTLIBRARIES = 

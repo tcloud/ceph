@@ -125,6 +125,7 @@ const void *config_option::conf_ptr(const md_config_t *conf) const
 }
 
 struct config_option config_optionsp[] = {
+  OPTION(folder_quota, OPT_INT, 0),
   OPTION(host, OPT_STR, "localhost"),
   OPTION(public_addr, OPT_ADDR, NULL),
   OPTION(cluster_addr, OPT_ADDR, NULL),
