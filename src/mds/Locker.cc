@@ -2604,7 +2604,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	dout(10) << "client requests file_max " << m->get_max_size()
 		 << " > max " << old_max << dendl;
 	change_max = true;
-        if (enable_folder_quota)
+        if (!enable_folder_quota)
           new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
         else
           new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
