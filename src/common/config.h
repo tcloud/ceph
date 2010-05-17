@@ -503,6 +503,7 @@ public:
   int   bdev_fake_mb;
   int   bdev_fake_max_mb;
   int   rgw_log;
+  int   folder_quota;
 };
 
 typedef enum {
