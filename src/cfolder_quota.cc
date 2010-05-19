@@ -26,11 +26,40 @@ enum {
 const char *XATTR_FOLDER_QUOTA = "user.quota";
 const char *XATTR_CEPH_RBYTES = "user.ceph.dir.rbytes";
 
+std::string get_abs_path(std::string &sPath)
+{
+	char szTmp[PATH_MAX+1] = {0};
+	if ( sPath[0]=='/' )
+		return sPath;
+
+	if ( getcwd(szTmp, PATH_MAX) ){
+		szTmp[strlen(szTmp)] = '/';
+		return std::string(szTmp+sPath);
+	}
+
+	return std::string("");
+}
+
+bool is_link(const std::string &sPath)
+{
+	bool bRet = true;
+	struct stat st_buf;
+	if (0==lstat(sPath.c_str(),&st_buf)){
+		if ( ! S_ISLNK(st_buf.st_mode) ){
+			bRet = false;
+		}
+	}else {
+		bRet = false;
+	}
+
+	return bRet;
+}
+
 bool is_folder(const std::string &sPath)
 {
 	bool bRet = true;
 	struct stat st_buf;
-	if (0==stat(sPath.c_str(),&st_buf)){
+	if (0==lstat(sPath.c_str(),&st_buf)){
 		if ( !S_ISDIR(st_buf.st_mode))
 			bRet = false;;
 	}else {
@@ -38,6 +67,94 @@ bool is_folder(const std::string &sPath)
 	}
 
 	return bRet;
+}
+
+std::string strip_unwanted_backslash(const std::string &sAbsPath)
+{
+	std::string sPathTmp="";
+	int iFirst = sAbsPath.find_first_not_of('/');
+	int iLast = sAbsPath.find_last_not_of('/');
+	if ( iFirst == (int)std::string::npos ){
+		sPathTmp = "/";
+	}else {
+		sPathTmp = "/" + sAbsPath.substr( iFirst, iLast-iFirst+1);
+	}
+	return sPathTmp;
+}
+
+/*
+ * If success, assign sRealPath = the real ABS path, otherwise return false
+ */
+bool get_link_real_path(const std::string &sPath, std::string &sRealPath )
+{
+	bool bSuccess = true;
+	char szPathReal[PATH_MAX] = {0};
+	std::string sTmpPath = sPath;
+	while (1){
+		if ( realpath(sTmpPath.c_str(), szPathReal ) ){
+			//std::cout << "(" << sTmpPath <<") link to "<< szPathReal << std::endl;
+			sTmpPath = szPathReal;
+			if ( is_folder(sTmpPath) ){
+				if ( sTmpPath[0] == '/' ){
+					sRealPath = sTmpPath;
+				}else {
+					sRealPath = sPath + "/" + sTmpPath;
+				}
+				break;
+			}else if ( is_link(sTmpPath) ){
+				continue;
+			}
+		}
+		else{
+			bSuccess = false;
+			break;
+		}
+	}
+
+	return bSuccess;
+
+}
+
+/*
+ * Handle symbolic link
+ * Transfer all the symbolic link in the ABS path to a real ABS path
+ * If fail, return false.
+ */
+bool get_real_path(const std::string &sAbsPath, std::string &sRealPath)
+{
+	std::string sResult = "";
+	std::string sPathTmp = strip_unwanted_backslash(sAbsPath);
+	int iTmp = 0;
+
+	while ( 1 ){
+    	if ( is_link( sPathTmp ) ){
+    		if (get_link_real_path(sPathTmp, sPathTmp)==false){
+    			std::cout << "get_link_real_path return false" << std::endl;
+    			return false;
+    		}
+    	}
+		sPathTmp = strip_unwanted_backslash(sPathTmp);
+    	if ( is_folder(sPathTmp) == false ){
+    		std::cout << "Should be folder" << std::endl;
+    		return false;
+    	}
+
+    	if ( sPathTmp == "/" ){
+    		sResult = "/" + sResult;
+    		break;
+    	}
+
+    	if ( (int)std::string::npos == (iTmp = sPathTmp.find_last_of("/")) ) {
+    		return false;
+    	}
+
+    	sResult = sPathTmp.substr(iTmp+1,-1) + "/" + sResult;
+    	sPathTmp = sPathTmp.substr(0, iTmp);
+	}
+
+	sRealPath = strip_unwanted_backslash(sResult);
+	//std::cout << "Finally, sRealPath= " << sRealPath << std::endl;
+	return true;
 }
 
 /*
@@ -56,7 +173,7 @@ bool find_parent_quota_entry(const std::string &sFolderPath,const std::string &s
 	bool bFound = false;
 
     while ( true ){
-    	iTmp = sPathTmp.find_last_of("/", sPathTmp.length()-2);
+    	iTmp = sPathTmp.find_last_of("/");
     	if ( iTmp == (int) std::string::npos ){
     		break;
     	}
@@ -66,12 +183,12 @@ bool find_parent_quota_entry(const std::string &sFolderPath,const std::string &s
     	}
 
     	if ( !is_folder(sPathNew) ){
-    		break;
+   			break;
     	}
 
     	char szTmp[1024] = {0};
     	if ( 0 < getxattr(sPathNew.c_str(), XATTR_FOLDER_QUOTA, szTmp, _countof(szTmp)) ){
-    		std::cout << "Got entry path_new=" << sPathNew << " size=" << szTmp << std::endl;
+    		//std::cout << "Got entry path_new=" << sPathNew << " size=" << szTmp << std::endl;
     		sParentPath = sPathNew;
     		sParentSize = szTmp;
     		bFound = true;
@@ -195,19 +312,76 @@ int option_parser(int argc, char ** argv, std::string &sFolderPath, std::string 
 	int ch;
 	opterr=0;
 	int iRet = 0;
+	std::string sTmp="";
 	while ( -1!=(ch=getopt(argc,argv,"p:r:s:")) ){
 		switch(ch){
 		case 'p':
-			sFolderPath = optarg;
-			break;
 		case 'r':
-			sRootPath = optarg;
+			sTmp = optarg;
+			if ( is_folder(sTmp) ){
+				if ( "" == (sTmp = get_abs_path(sTmp)) ){
+					std::cout << "Option: Error unknown: can not covert "
+							<< optarg << "to ABS path" << std::endl;
+					return -1;
+				}
+
+				bool bRet=true;
+				if ( ch == 'p' ){
+					bRet = get_real_path(sTmp, sFolderPath);
+				}else{
+					bRet = get_real_path(sTmp, sRootPath);
+				}
+				if ( bRet == false ){
+					return -1;
+				}
+			}else {
+				std::cout << "Option: (" << sTmp
+						<<  ") must be a folder" << std::endl;;
+				return -1;
+			}
 			break;
 		case 's':
-			sSize = optarg;
-			break;
-		default:
-			iRet = -1;
+			sTmp = optarg;
+			int i=sTmp.length()-1;
+			unsigned long long ullBase=1;
+			switch (sTmp[i]){
+			case 'K':
+			case 'k':
+				ullBase = 1 << 10;
+			case 'M':
+			case 'm':
+				ullBase = 1 << 20;
+				break;
+			case 'G':
+			case 'g':
+				ullBase = 1 << 30;
+				break;
+			case 'T':
+			case 't':
+				ullBase = (unsigned long long)(1 << 10)*(unsigned long long)(1 << 30);
+				break;
+			case 'P':
+			case 'p':
+				ullBase = (unsigned long long)(1 << 20)*(unsigned long long)(1 << 30);
+				break;
+			default:
+				i++;
+				break;
+			}
+			sTmp = sTmp.substr(0, i);
+
+			for ( i=0; isdigit(sTmp[i]); i++)
+				;
+			if ( i == (int)sTmp.length() ){
+				char szTmp[65] = {0};
+				snprintf(szTmp, _countof(szTmp), "%llu", strtoull(sTmp.c_str(), NULL, 0) * ullBase);
+				sSize = szTmp;
+				//std::cout << "Size = " << sSize << std::endl;
+			}else {
+				std::cout<<"Option: Size(" << sTmp
+						<< ") must be integer or integerK/M/G/T/P" << std::endl;
+				return -1;
+			}
 			break;
 		}
 	}
@@ -238,8 +412,7 @@ int quota_set(std::string &rmsg, std::string &sFolderPath, std::string &sRootPat
     		return FQ_EXIT_SMALL_THAN_REAL;
     	}
     }
-    //todo: Checking: root_path must be part of folder_path
-    //todo: handle symbol link
+
     std::string sParentPath="", sParentSize="";
     if ( find_parent_quota_entry(sFolderPath, sRootPath, sParentPath, sParentSize) ){
     	g_ullSizeSum = 0;
@@ -354,6 +527,7 @@ int main (int argc, char ** argv)
 	std::string rmsg="";
 	std::string sTmp;
 	std::string sCommand="", sFolderPath="", sRootPath="", sSize="";
+	std::string sAbsFolderPath="", sAbsRootPath="";
 
 	try {
 		if ( argc <= 2){
@@ -366,16 +540,24 @@ int main (int argc, char ** argv)
 		if ( iRet != FQ_EXIT_SUCCESS ){
 			throw (int)FQ_EXIT_ARGU;
 		}
+
 		if ( sCommand == "set" ){
 			if (sFolderPath == "" || sRootPath == "" || sSize == ""){
 				std::cout << "Option: need following options folder_path("<< sFolderPath <<
-						"), root_path(" << sRootPath << "), size(" << sSize << ")" << std::endl;
+						"), root_mount_path(" << sRootPath << "), size(" << sSize << ")" << std::endl;
 			}
+			//Checking: root_path must be part of folder_path
+			if ( 0 != sFolderPath.compare(0, sRootPath.length(), sRootPath) ){
+				std::cout << "Options: root_mount_path(" << sRootPath
+						<< ") must include folder_path(" << sFolderPath << ")" << std::endl;
+				throw (int)FQ_EXIT_ARGU;
+			}
+
 			iRet = quota_set(rmsg, sFolderPath, sRootPath, sSize);
 			if ( iRet != FQ_EXIT_SUCCESS )
 				throw iRet;
 		}
-		if ( sCommand == "unset" || sCommand == "unset_all" ||
+		else if ( sCommand == "unset" || sCommand == "unset_all" ||
 				sCommand == "list" || sCommand == "list_all" ){
 			if (sFolderPath == ""){
 				std::cout << "Option: need following options folder_path("<< sFolderPath << ")" << std::endl;
@@ -397,6 +579,9 @@ int main (int argc, char ** argv)
 				if ( iRet != FQ_EXIT_SUCCESS )
 					throw iRet;
 			}
+		}else {
+			std::cout << "unsupport command(" << sCommand << ")" << std::endl;
+			throw (int)FQ_EXIT_ARGU;
 		}
 	}
 	catch(int iThrow){
