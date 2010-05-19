@@ -2607,7 +2607,8 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
         if (!enable_folder_quota)
           new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
         else
-          new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
+          //new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
+          new_max = m->get_max_size();
       } else {
         if (!enable_folder_quota) {
           new_max = calc_bounding(size * 2);
