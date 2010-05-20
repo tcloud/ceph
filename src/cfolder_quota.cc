@@ -444,6 +444,8 @@ int quota_set(std::string &rmsg, std::string &sFolderPath, std::string &sRootPat
     	}
     }
 
+    system("sync");
+
 	return iRet;
 }
 
