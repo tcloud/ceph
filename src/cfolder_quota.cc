@@ -407,7 +407,7 @@ int quota_set(std::string &rmsg, std::string &sFolderPath, std::string &sRootPat
     //Check rbytes
     snprintf(szCmd, _countof(szCmd)-1, "touch %s", sFolderPath.c_str());
     system(szCmd);
-    if ( 0 < getxattr(sFolderPath.c_str(), XATTR_FOLDER_QUOTA, szTmp, _countof(szTmp)) ){
+    if ( 0 < getxattr(sFolderPath.c_str(), XATTR_CEPH_RBYTES, szTmp, _countof(szTmp)) ){
     	if ( strtoull(szTmp, NULL, 10) > strtoull(sSize.c_str(), NULL, 10) ){
     		return FQ_EXIT_SMALL_THAN_REAL;
     	}
