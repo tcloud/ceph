@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
 #include <dirent.h>
 
 #if !defined(_countof)
@@ -24,7 +26,7 @@ enum {
 	FQ_EXIT_COMMAND_NOT_FOUND		= 6,
 };
 const char *XATTR_FOLDER_QUOTA = "user.quota";
-const char *XATTR_CEPH_RBYTES = "user.ceph.dir.rbytes";
+const char *XATTR_CEPH_RBYTES = "ceph.dir.rbytes";
 
 std::string get_abs_path(std::string &sPath)
 {
@@ -90,29 +92,24 @@ bool get_link_real_path(const std::string &sPath, std::string &sRealPath )
 	bool bSuccess = true;
 	char szPathReal[PATH_MAX] = {0};
 	std::string sTmpPath = sPath;
-	while (1){
-		if ( realpath(sTmpPath.c_str(), szPathReal ) ){
-			//std::cout << "(" << sTmpPath <<") link to "<< szPathReal << std::endl;
-			sTmpPath = szPathReal;
-			if ( is_folder(sTmpPath) ){
-				if ( sTmpPath[0] == '/' ){
-					sRealPath = sTmpPath;
-				}else {
-					sRealPath = sPath + "/" + sTmpPath;
-				}
-				break;
-			}else if ( is_link(sTmpPath) ){
-				continue;
+	if ( realpath(sTmpPath.c_str(), szPathReal ) ){
+		//std::cout << "(" << sTmpPath <<") link to "<< szPathReal << std::endl;
+		sTmpPath = szPathReal;
+		if ( is_folder(sTmpPath) ){
+			if ( sTmpPath[0] == '/' ){
+				sRealPath = sTmpPath;
+			}else {
+				sRealPath = sPath + "/" + sTmpPath;
 			}
-		}
-		else{
+		}else {
 			bSuccess = false;
-			break;
 		}
+	}
+	else{
+		bSuccess = false;
 	}
 
 	return bSuccess;
-
 }
 
 /*
@@ -158,6 +155,61 @@ bool get_real_path(const std::string &sAbsPath, std::string &sRealPath)
 }
 
 /*
+ * Handler for xattr related system call
+ * 	Supported sAction: "set"/"remove"/"get"
+ * 	If iRet != FQ_EXIT_SUCCESS, output error msg to emsg parameter
+ */
+int xattr_handler( std::string sAction, std::string sPath,
+					std::string sName, std::string &sValue, std::string &rmsg)
+{
+	char szTmp[1024]={0};
+	int iRet = FQ_EXIT_SUCCESS;
+	int fd = open (sPath.c_str(), O_SYNC );
+	if ( fd < 0 ){
+		rmsg = "fail to open file(" + sPath + "), error string: " + std::string(strerror(errno));
+		return FQ_EXIT_UNKNOW;
+	}
+
+	if ( sAction == "set" ){
+	    if ( 0 != fsetxattr( fd, sName.c_str(), (void *)sValue.c_str(), sValue.length(), 0) ){
+	    	snprintf(szTmp, _countof(szTmp)-1, "fsetxattr(%s) fail, errno(%d): %s",
+						sName.c_str(), errno, strerror(errno));
+	    	iRet = FQ_EXIT_UNKNOW;
+	    }
+	}else if ( sAction == "remove" ){
+		fremovexattr(fd, sName.c_str());
+	}else if ( sAction == "get" ){
+	    if ( 0 >= fgetxattr(fd, sName.c_str(), szTmp, _countof(szTmp)) ){
+	    	snprintf(szTmp, _countof(szTmp)-1, "fgetxattr(%s) fail, errno(%d): %s",
+						sName.c_str(), errno, strerror(errno));
+	    	iRet = FQ_EXIT_UNKNOW;
+	    }else {
+	    	sValue = szTmp;
+	    }
+	}
+
+	//fsync(fd);
+	close(fd);
+
+	rmsg = szTmp;
+	return iRet;
+}
+
+void refresh_rbytes(const std::string &sPath, std::string &sRbytes)
+{
+	int fd = open (sPath.c_str(), O_SYNC );
+	char szTmp[1024] = {0};
+	if ( fd > 0 ){
+		fsetxattr( fd, "user.refresh_rbytes", (void *)"1", 1, 0);
+		fgetxattr(fd, XATTR_CEPH_RBYTES, szTmp, _countof(szTmp));
+		//std::cout << "rbytes=" << szTmp << std::endl;
+		close(fd);
+	}
+	sRbytes = szTmp;
+	return;
+}
+
+/*
  *   To find the nearest parent which has quota setting
  *   If found, update sParentPath & sParentSize
  *   return value:
@@ -186,11 +238,10 @@ bool find_parent_quota_entry(const std::string &sFolderPath,const std::string &s
    			break;
     	}
 
-    	char szTmp[1024] = {0};
-    	if ( 0 < getxattr(sPathNew.c_str(), XATTR_FOLDER_QUOTA, szTmp, _countof(szTmp)) ){
+    	std::string rmsg="";
+    	if ( FQ_EXIT_SUCCESS == xattr_handler("get", sPathNew, XATTR_FOLDER_QUOTA, sParentSize, rmsg) ) {
     		//std::cout << "Got entry path_new=" << sPathNew << " size=" << szTmp << std::endl;
     		sParentPath = sPathNew;
-    		sParentSize = szTmp;
     		bFound = true;
     		break;
     	}else {
@@ -222,9 +273,9 @@ void sum_sub_quota(std::string sPathNow, const std::string &sPathStop)
 			std::string sSubPath = sPathNow + "/"+ sSubName;
 			if ( is_folder(sSubPath) && sSubName!="." && sSubName!=".." ){
 				if ( sSubPath != sPathStop ){
-					char szTmp[64] = {0};
-					if ( 0 < getxattr(sSubPath.c_str(), XATTR_FOLDER_QUOTA, szTmp, _countof(szTmp)) ){
-						g_ullSizeSum += strtoull(szTmp, NULL, 10);
+					std::string sTmp = "", rmsg = "";
+					if ( FQ_EXIT_SUCCESS == xattr_handler("get", sSubPath, XATTR_FOLDER_QUOTA, sTmp, rmsg) ) {
+						g_ullSizeSum += strtoull(sTmp.c_str(), NULL, 10);
 					}else {
 						sum_sub_quota(sSubPath, sPathStop);
 					}
@@ -245,9 +296,8 @@ bool quota_get(const std::string &sFolderPath, std::string &sSize)
 {
 	bool bRet = false;
 	if ( is_folder(sFolderPath) ){
-		char szTmp[64] = {0};
-    	if ( 0 < getxattr(sFolderPath.c_str(), XATTR_FOLDER_QUOTA, szTmp, _countof(szTmp)) ){
-    		sSize = szTmp;
+		std::string rmsg="";
+		if ( FQ_EXIT_SUCCESS == xattr_handler("get", sFolderPath, XATTR_FOLDER_QUOTA, sSize, rmsg) ) {
     		bRet = true;
     	}
 	}
@@ -305,7 +355,9 @@ void usage()
 	std::cout << std::endl;
 }
 
-//If error occurred, return -1
+/*
+ * If error occurred, return -1
+ */
 int option_parser(int argc, char ** argv, std::string &sFolderPath, std::string &sRootPath
 		,std::string &sSize)
 {
@@ -318,7 +370,7 @@ int option_parser(int argc, char ** argv, std::string &sFolderPath, std::string 
 		case 'p':
 		case 'r':
 			sTmp = optarg;
-			if ( is_folder(sTmp) ){
+			if ( is_folder(sTmp) || is_link(sTmp) ){
 				if ( "" == (sTmp = get_abs_path(sTmp)) ){
 					std::cout << "Option: Error unknown: can not covert "
 							<< optarg << "to ABS path" << std::endl;
@@ -402,13 +454,15 @@ int quota_set(std::string &rmsg, std::string &sFolderPath, std::string &sRootPat
 {
 	int iRet = FQ_EXIT_SUCCESS;
     rmsg = "";
-    char szCmd[1024] = {0};
     char szTmp[1024] = {0};
+
     //Check rbytes
-    snprintf(szCmd, _countof(szCmd)-1, "touch %s", sFolderPath.c_str());
-    system(szCmd);
-    if ( 0 < getxattr(sFolderPath.c_str(), XATTR_CEPH_RBYTES, szTmp, _countof(szTmp)) ){
-    	if ( strtoull(szTmp, NULL, 10) > strtoull(sSize.c_str(), NULL, 10) ){
+    //Before checking rbytes, we should force ceph to refresh the rbytes in first
+    std::string sRbytes="";
+    refresh_rbytes(sFolderPath, sRbytes);
+    if ( sRbytes != "" ) {
+    	//std::cout << "give:" << sSize << ", Real:" << sRbytes << std::endl;
+    	if ( strtoull(sRbytes.c_str(), NULL, 10) > strtoull(sSize.c_str(), NULL, 10) ){
     		return FQ_EXIT_SMALL_THAN_REAL;
     	}
     }
@@ -434,17 +488,9 @@ int quota_set(std::string &rmsg, std::string &sFolderPath, std::string &sRootPat
     		rmsg = szTmp;
     	}
     	else {
-    		iRet = setxattr( sFolderPath.c_str(), XATTR_FOLDER_QUOTA, (void *)sSize.c_str(), sSize.length(), 0);
-    		if ( iRet ){
-    			snprintf(szTmp, _countof(szTmp)-1, "xattr_setxattr fail, iRet(%d), errno(%d)", iRet, errno);
-    			rmsg = szTmp;
-    			iRet = FQ_EXIT_UNKNOW;
-    		}
-
+    		iRet = xattr_handler("set", sFolderPath, XATTR_FOLDER_QUOTA, sSize, rmsg);
     	}
     }
-
-    system("sync");
 
 	return iRet;
 }
@@ -454,9 +500,9 @@ int quota_set(std::string &rmsg, std::string &sFolderPath, std::string &sRootPat
  */
 void quota_unset(const std::string &sFolderPath)
 {
-	std::string sSize;
+	std::string sSize="", rmsg="";
 	if ( quota_get(sFolderPath, sSize) ){
-		removexattr(sFolderPath.c_str(), XATTR_FOLDER_QUOTA);
+		xattr_handler("remove", sFolderPath, XATTR_FOLDER_QUOTA, sSize, rmsg);
 	}
 }
 
@@ -590,7 +636,7 @@ int main (int argc, char ** argv)
 		iExit = iThrow;
 	}
 	if ( iExit != FQ_EXIT_SUCCESS && rmsg != "" )
-		std::cout << rmsg;
+		std::cout << rmsg << std::endl;
 
 	return iExit;
 }
