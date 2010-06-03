@@ -1930,28 +1930,26 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
       stop = true;
     }
 
+    if (enable_folder_quota && g_conf.mds_dirstat_min_interval > 0)
+      g_conf.mds_dirstat_min_interval = 0;
+
     // delay propagating until later?
-    if (!stop && !first &&
-	g_conf.mds_dirstat_min_interval > 0) {
+    if (!stop && !first && g_conf.mds_dirstat_min_interval > 0) {
       if (pin->last_dirstat_prop.sec() > 0) {
-	double since_last_prop = mut->now - pin->last_dirstat_prop;
-	if (since_last_prop < g_conf.mds_dirstat_min_interval) {
-	  dout(10) << "predirty_journal_parents last prop " << since_last_prop
-		   << " < " << g_conf.mds_dirstat_min_interval
-		   << ", stopping" << dendl;
-	  stop = true;
-	} else {
-	  dout(10) << "predirty_journal_parents last prop " << since_last_prop << " ago, continuing" << dendl;
-	}
+        double since_last_prop = mut->now - pin->last_dirstat_prop;
+        if (since_last_prop < g_conf.mds_dirstat_min_interval) {
+          dout(10) << "predirty_journal_parents last prop " << since_last_prop
+            << " < " << g_conf.mds_dirstat_min_interval
+            << ", stopping" << dendl;
+          stop = true;
+        } else {
+          dout(10) << "predirty_journal_parents last prop " << since_last_prop << " ago, continuing" << dendl;
+        }
       } else {
-	dout(10) << "predirty_journal_parents last prop never, stopping" << dendl;
-	stop = true;
+        dout(10) << "predirty_journal_parents last prop never, stopping" << dendl;
+        stop = true;
       }
     }
-
-    // FIXME: hack for force update
-    if (enable_folder_quota)
-      stop = false;
 
     if (!stop &&
 	mut->wrlocks.count(&pin->nestlock) == 0 &&
