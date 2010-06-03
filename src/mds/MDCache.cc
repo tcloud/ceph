@@ -1942,6 +1942,9 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
       stop = true;
     }
 
+    if (enable_folder_quota && g_conf->mds_dirstat_min_interval > 0)
+      g_conf->mds_dirstat_min_interval = 0;
+
     // delay propagating until later?
     if (!stop && !first &&
 	g_conf->mds_dirstat_min_interval > 0) {
@@ -1956,14 +1959,10 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
 	  dout(10) << "predirty_journal_parents last prop " << since_last_prop << " ago, continuing" << dendl;
 	}
       } else {
-	dout(10) << "predirty_journal_parents last prop never, stopping" << dendl;
-	stop = true;
+        dout(10) << "predirty_journal_parents last prop never, stopping" << dendl;
+        stop = true;
       }
     }
-
-    // FIXME: hack for force update
-    if (enable_folder_quota)
-      stop = false;
 
     if (!stop &&
 	mut->wrlocks.count(&pin->nestlock) == 0 &&
