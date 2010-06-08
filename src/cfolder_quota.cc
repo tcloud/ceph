@@ -304,6 +304,7 @@ bool quota_get(const std::string &sFolderPath, std::string &sSize)
 	return bRet;
 }
 
+int g_iMaxSubDirLevel = 0; //The max subdir recursive level
 std::map<std::string,std::string> g_mapQuotaList;
 /*
  *   To get all quota setting of specified folder and its
@@ -313,7 +314,7 @@ std::map<std::string,std::string> g_mapQuotaList;
  *       {sPath, sSize}
  *   Only the entry with quota setting will be append to list.
  */
-void quota_get_recu(std::string sFolderPath)
+void quota_get_recu(std::string sFolderPath, int iCurrentLevel)
 {
 	if ( !is_folder(sFolderPath) ){
 		return;
@@ -323,6 +324,10 @@ void quota_get_recu(std::string sFolderPath)
 	quota_get(sFolderPath, sSize);
 	if ( sSize != "" ){
 		g_mapQuotaList.insert( make_pair(sFolderPath, sSize) );
+	}
+
+	if ( g_iMaxSubDirLevel != 0 && g_iMaxSubDirLevel <= iCurrentLevel ){
+	  return;
 	}
 
 	DIR *pdir;
@@ -335,7 +340,7 @@ void quota_get_recu(std::string sFolderPath)
 			std::string sSubName = pdentry->d_name;
 			std::string sSubPath = sFolderPath + "/"+ sSubName;
 			if ( is_folder(sSubPath) && sSubName!="." && sSubName!=".." ){
-				quota_get_recu(sSubPath);
+				quota_get_recu(sSubPath, iCurrentLevel + 1);
 			}
 		}else {
 			break;
@@ -351,7 +356,7 @@ void usage()
 	std::cout << "	unset -p folder_path" << std::endl;
 	std::cout << "	unset_all -p folder_path" << std::endl;
 	std::cout << "	list -p folder_path" << std::endl;
-	std::cout << "	list_all -p folder_path" << std::endl;
+	std::cout << "	list_all -p folder_path (-l sub_dir_level)" << std::endl;
 	std::cout << std::endl;
 }
 
@@ -359,13 +364,13 @@ void usage()
  * If error occurred, return -1
  */
 int option_parser(int argc, char ** argv, std::string &sFolderPath, std::string &sRootPath
-		,std::string &sSize)
+		,std::string &sSize, int &iSubDirLevel)
 {
 	int ch;
 	opterr=0;
 	int iRet = 0;
 	std::string sTmp="";
-	while ( -1!=(ch=getopt(argc,argv,"p:r:s:")) ){
+	while ( -1!=(ch=getopt(argc,argv,"p:r:s:l:")) ){
 		switch(ch){
 		case 'p':
 		case 'r':
@@ -392,6 +397,10 @@ int option_parser(int argc, char ** argv, std::string &sFolderPath, std::string 
 				return -1;
 			}
 			break;
+    case 'l':
+      sTmp = optarg;
+      iSubDirLevel = atoi(optarg);
+      break;
 		case 's':
 			sTmp = optarg;
 			int i=sTmp.length()-1;
@@ -561,7 +570,7 @@ int quota_list(const std::string &sFolderPath)
 int quota_list_all(const std::string &sFolderPath)
 {
 	g_mapQuotaList.clear();
-	quota_get_recu(sFolderPath);
+	quota_get_recu(sFolderPath, 0);
 	for (std::map<std::string, std::string>::const_iterator it = g_mapQuotaList.begin()
 			; it != g_mapQuotaList.end(); ++it){
 		std::cout << "{'path': '" << it->first << "', 'size': '" << it->second << "'}" << std::endl;
@@ -584,7 +593,8 @@ int main (int argc, char ** argv)
 			throw (int)FQ_EXIT_ARGU;
 		}
 		sCommand = argv[1];
-		iRet = option_parser(argc, argv, sFolderPath, sRootPath, sSize);
+		g_iMaxSubDirLevel = 0;
+		iRet = option_parser(argc, argv, sFolderPath, sRootPath, sSize, g_iMaxSubDirLevel);
 		if ( iRet != FQ_EXIT_SUCCESS ){
 			throw (int)FQ_EXIT_ARGU;
 		}
