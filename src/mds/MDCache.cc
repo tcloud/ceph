@@ -1965,6 +1965,19 @@ void MDCache::predirty_journal_parents(Mutation *mut, EMetaBlob *blob,
     if (stop) {
       dout(10) << "predirty_journal_parents stop.  marking nestlock on " << *pin << dendl;
       mds->locker->mark_updated_scatterlock(&pin->nestlock);
+
+      // For folder quota checking, we need to update all ancestor replicas.
+      if (enable_folder_quota ) {
+      	CInode *temp_in = pin;
+        CDentry *temp_dn = temp_in->get_projected_parent_dn();
+        while (temp_dn) {
+          temp_in = temp_dn->get_dir()->get_inode();
+          if (!temp_in->is_auth())
+            mds->locker->mark_updated_scatterlock(&temp_in->nestlock);
+          temp_dn = temp_in->get_projected_parent_dn();
+        }
+      }
+      
       mut->ls->dirty_dirfrag_nest.push_back(&pin->item_dirty_dirfrag_nest);
       mut->add_updated_lock(&pin->nestlock);
       break;
