@@ -209,7 +209,7 @@ public:
 				   const string &dname);
 
   void kick_cap_releases(MDRequest *mdr);
-  bool check_subtree_quota(CDentry* parent_dn, __u64 size);
+  int check_subtree_quota(CDentry *parent_dn, __u64 *size);
 
   void remove_client_cap(CInode *in, client_t client);
 
