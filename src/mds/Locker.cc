@@ -2331,9 +2331,16 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, inode_t *
   }
 }
 
-bool Locker::check_subtree_quota(CDentry* parent_dn, __u64 size)
+/*
+ * search up subtree to check quota.
+ * return:
+ *   0 - out of quota
+ *   1 - quota available
+ *   2 - no quota limit
+ */
+int Locker::check_subtree_quota(CDentry *parent_dn, __u64 *size)
 {
-  bool result = true;
+  int result = 1;
   __u64 quota = 0;
   __u64 rbytes = 0;
 
@@ -2350,11 +2357,16 @@ bool Locker::check_subtree_quota(CDentry* parent_dn, __u64 size)
 
   if (quota > 0) {
     dout(10) << "check available quota: quota=" << quota << " rbytes=" << rbytes << dendl;
-    if (rbytes > quota || size > quota - rbytes) {
-      dout(10) << "out of quota!" << dendl;
-      result = false;
+    if (rbytes > quota ) {
+      result = 0;
+      *size = 0;
+    } else {
+      *size = quota - rbytes;
+      if ( *size > quota - rbytes)
+        result = 0;
     }
   } else {
+    result = 2;
     dout(10) << "no quota limit" << dendl;
   }
   
@@ -2492,7 +2504,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   if (change_max) {
     if (enable_folder_quota && new_max > old_max) {
       __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
-      if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size))
+      if (!check_subtree_quota(in->get_projected_parent_dn(), &requested_size))
         new_max = old_max;
     }
 
