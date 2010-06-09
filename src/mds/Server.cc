@@ -2587,8 +2587,11 @@ void Server::handle_client_openc(MDRequest *mdr)
     return;
   }
 
+  __u64 remaining_quota = 0;
+  int quota_status = 0;
   if (enable_folder_quota) {
-    if (!mds->locker->check_subtree_quota(dn, 0)) {
+    quota_status = mds->locker->check_subtree_quota(dn, &remaining_quota);
+    if (!quota_status) {
       dout(10) << "openc failed: out of folder quota" << dendl;
       reply_request(mdr, -EDQUOT);
       return;
@@ -2613,13 +2616,13 @@ void Server::handle_client_openc(MDRequest *mdr)
   in->inode.version = dn->pre_dirty();
   if (cmode & CEPH_FILE_MODE_WR) {
     in->inode.client_ranges[client].range.first = 0;
-    in->inode.client_ranges[client].range.last = in->inode.get_layout_size_increment();
-    in->inode.client_ranges[client].follows = follows;
-    in->inode.client_ranges[client].range.first = 0;
-    if (enable_folder_quota)
+    if (enable_folder_quota && 
+        quota_status == 1 && 
+        remaining_quota < in->inode.get_layout_size_increment())
       in->inode.client_ranges[client].range.last = 0;
     else
       in->inode.client_ranges[client].range.last = in->inode.get_layout_size_increment();
+    in->inode.client_ranges[client].follows = follows;
   }
   in->inode.rstat.rfiles = 1;
 
