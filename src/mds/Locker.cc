@@ -2329,7 +2329,36 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, inode_t *
       pi->mode = m->head.mode;
     }
   }
+}
 
+bool Locker::check_subtree_quota(CDentry* parent_dn, __u64 size)
+{
+  bool result = true;
+  __u64 quota = 0;
+  __u64 rbytes = 0;
+
+  while (parent_dn != NULL) {
+    CInode *parent_in = parent_dn->get_dir()->get_inode();
+    map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
+    if (xattrs->find("user.quota") != xattrs->end()) {
+      quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
+      rbytes = (uint64_t) parent_in->get_projected_inode()->rstat.rbytes;
+      break;
+    }
+    parent_dn = parent_in->get_projected_parent_dn();
+  }  
+
+  if (quota > 0) {
+    dout(10) << "check available quota: quota=" << quota << " rbytes=" << rbytes << dendl;
+    if (rbytes > quota || size > quota - rbytes) {
+      dout(10) << "out of quota!" << dendl;
+      result = false;
+    }
+  } else {
+    dout(10) << "no quota limit" << dendl;
+  }
+  
+  return result;
 }
 
 /*
@@ -2355,8 +2384,6 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   uint64_t old_max = latest->client_ranges.count(client) ? latest->client_ranges[client].range.last : 0;
   uint64_t new_max = old_max;
   bool enable_folder_quota = g_conf.folder_quota;
-  uint64_t quota = 0;
-  uint64_t rbytes = 0;
   
   if (in->is_file()) {
     dout(20) << "inode is file" << dendl;
@@ -2464,30 +2491,9 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 
   if (change_max) {
     if (enable_folder_quota && new_max > old_max) {
-      // check folder quota
-      CDentry *parent_dn = in->get_projected_parent_dn();
-
-      while (parent_dn != NULL) {
-        CInode *parent_in = parent_dn->get_dir()->get_inode();
-        map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
-        if (xattrs->find("user.quota") != xattrs->end()) {
-          quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
-          rbytes = (uint64_t) parent_in->get_projected_inode()->rstat.rbytes;
-          rbytes += m->get_size() - latest->size; // add size diff of this cap update
-          break;
-        }
-        parent_dn = parent_in->get_projected_parent_dn();
-      }  
-
-      if (quota > 0) {
-        dout(10) << "check available quota: quota=" << quota << " rbytes=" << rbytes << dendl;
-        if (rbytes > quota || new_max - old_max > quota - rbytes) {
-          dout(10) << "out of quota: requested=" << new_max - old_max << dendl;
-          new_max = old_max;
-        }
-      } else {
-        dout(10) << "no quota limit" << dendl;
-      }
+      __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
+      if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size))
+        new_max = old_max;
     }
 
     dout(7) << "  max_size " << old_max << " -> " << new_max
