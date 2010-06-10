@@ -5,6 +5,12 @@ import syslog
 import time
 from optparse import OptionParser
 
+if sys.getdefaultencoding() != 'utf-8':
+    reload(sys)
+    sys.setdefaultencoding('utf-8')
+
+
+
 EXIT_CODE = {
     'EXIT_SUCCESS': os.EX_OK,
     'EXIT_UNKNOW': 1,
@@ -24,9 +30,16 @@ class Usage(Exception):
 #CLIENTS = ['10.201.193.238', '10.201.193.240', '10.201.193.223']
 g_clients = []
 g_client_index = 0
-TMP_ROOT = '/dd1'
-TMP_UPTREE = '%s/dd2/dd3/dd4' % TMP_ROOT
-TMP_SUBTREE = '/dd5/dd6/dd7/dd8/'
+#TMP_FULL_PATH = '/dd1/dd2/dd3/dd4/dd5/dd6/dd7/dd8/'
+TMP_ROOT = '/dd1/'
+TMP_EXPORT_DIR = 'dd4/' 
+TMP_UPTREE = '%sdd2/dd3/' % TMP_ROOT
+TMP_EXPORT_TREE = '%s%s' % (TMP_UPTREE, TMP_EXPORT_DIR)
+TMP_SUBTREE = '%sdd5/dd6/dd7/dd8/' %TMP_EXPORT_DIR
+
+TIMES_TOLLERANCE = 3 
+SIZE_INC_BASE = 100 #MB 
+QUOTA_SETTING = SIZE_INC_BASE * 4 
 
 def subtree_test(root_path, monitor):
     '''
@@ -48,21 +61,19 @@ def subtree_test(root_path, monitor):
     (iret, msg) = mount_root(root_path, monitor)
     if iret :
         return iret, msg
- 
     # T1
-    print '\n\nT1: Add file( size < quota ) in root, then add files to subtree until exceed:'
+    print '\n\nTest1: Add file( size < quota ) in root, then add files to subtree until exceed:'
     (iret, msg) = test_subtree_dedicated( root_path, monitor, 'exceed_on_subtree' )
     if iret :
         return iret, msg
-    
     # T2
-    print '\n\nT2: Add file ( size < quota ) in subtree, theb add files to subtree until exceed:'
+    print '\n\nTest2: Add file ( size < quota ) in subtree, theb add files to subtree until exceed:'
     (iret, msg) = test_subtree_dedicated( root_path, monitor, 'exceed_on_uptree' )
     if iret :
         return iret, msg
  
     #T3
-    print '\n\nT3: Rotate add files to root & subtree until exceed with 2 testing cycle:'
+    print '\n\nTest3: Rotate add files to root & subtree until exceed with 2 testing cycle:'
     (iret, msg) = test_subtree_mix(root_path, monitor, 2)
     if iret :
         return iret, msg
@@ -76,12 +87,12 @@ def test_subtree_mix(root_path, monitor, loop_times):
     if iret:
         return iret, msg
 
-    quota_increment = 12
+    quota_increment = QUOTA_SETTING
     quota = quota_increment
-    inc_base = 2
-    times_tollerance = 4
+    inc_base = SIZE_INC_BASE
+    times_tollerance = TIMES_TOLLERANCE
+    total_size = 0
 
-    total_size=2;
     for loop in range(0, loop_times):
         print '\nTesting for loop%d:' % loop
         #print 'cfolder_quota set -p %s%s -r %s -s %dM' % (
@@ -90,10 +101,10 @@ def test_subtree_mix(root_path, monitor, loop_times):
                         root_path, TMP_ROOT, root_path, quota), True)
         if iret:
             return iret, msg
-        
+        os.system('sync')
         if ( loop == 0 ):
-            print 'SSH %s: ceph mds tell 0 export_dir %s 1' % (monitor, TMP_UPTREE)
-            (iret, msg) = execute_ssh(['ceph mds tell 0 export_dir %s 1' % TMP_UPTREE], monitor)
+            print 'SSH %s: ceph mds tell 0 export_dir %s 1' % (monitor, TMP_EXPORT_TREE)
+            (iret, msg) = execute_ssh(['ceph mds tell 0 export_dir %s 1' % TMP_EXPORT_TREE], monitor)
             if iret:
                 return iret, msg
         
@@ -101,7 +112,7 @@ def test_subtree_mix(root_path, monitor, loop_times):
             #(iret, msg) = rotate_client_cmd('mount -o remount %s' % root_path, False)
             #if ( iret != 0 ): 
             #    return iret, msg
-            time.sleep(1)            
+            time.sleep(6)            
         
         times = quota / (loop + 1) / inc_base / 2 + times_tollerance
         stop = False
@@ -111,8 +122,8 @@ def test_subtree_mix(root_path, monitor, loop_times):
             for path in paths:
                 #print 'dd if=/dev/zero of=%s/%dM bs=1M count=%d' % (
                 #                    path, total_size, inc_base)
-                (iret, msg) = rotate_client_cmd('dd if=/dev/zero of=%s/%dM bs=1M count=%d' % (
-                                    path, total_size, inc_base), True)                
+                (iret, msg) = rotate_client_cmd('dd if=/dev/zero of=%s/%d-%dM bs=1M count=%d' % (
+                                    path, inc_base, total_size/inc_base, inc_base), True)                
                 if iret:
                     #print msg
                     stop = True
@@ -126,7 +137,7 @@ def test_subtree_mix(root_path, monitor, loop_times):
             print 'Success for loop%d ---------------------\n' % loop
             iret = 0
         else:
-            print 'Fail: i=%d' % i     
+            print 'Fail: (i=%d) quota=%d, total=%d' % (i, quota, total_size)   
             return -1, msg
         quota += quota_increment
             
@@ -140,15 +151,17 @@ def test_subtree_dedicated( root_path, monitor, exceed_on ):
     (iret, msg) = prepare_subtree_env(root_path)
     if iret:
         return iret, msg
-    quota = 12
+    quota = QUOTA_SETTING
     #print 'cfolder_quota set -p %s%s -r %s -s %dM' % (
     #                root_path, TMP_ROOT, root_path, quota)
     (iret,msg) = rotate_client_cmd('cfolder_quota set -p %s%s -r %s -s %dM' % (
                     root_path, TMP_ROOT, root_path, quota), False)
     if iret:
         return iret, msg
-    print 'SSH %s: ceph mds tell 0 export_dir %s 1' % (monitor, TMP_UPTREE)
-    (iret, msg) = execute_ssh(['ceph mds tell 0 export_dir %s 1' % TMP_UPTREE], monitor)
+    os.system('sync')
+
+    print 'SSH %s: ceph mds tell 0 export_dir %s 1' % (monitor, TMP_EXPORT_TREE)
+    (iret, msg) = execute_ssh(['ceph mds tell 0 export_dir %s 1' % TMP_EXPORT_TREE], monitor)
     if iret:
         return iret, msg
 
@@ -156,24 +169,26 @@ def test_subtree_dedicated( root_path, monitor, exceed_on ):
     #(iret, msg) = rotate_client_cmd('mount -o remount %s' % root_path, False)
     #if ( iret != 0 ): 
     #    return iret, msg
-    time.sleep(1)
+    time.sleep(6)
 
-    total_size=6;
+    inc_base = SIZE_INC_BASE
+    total_size = 0
     if exceed_on == 'exceed_on_subtree':
         path = '%s%s' % (root_path, TMP_UPTREE)
     else:
         path = '%s%s%s' % (root_path, TMP_UPTREE, TMP_SUBTREE)
     #print 'dd if=/dev/zero of=%s/%dM bs=1M count=%d' % (
     #                    path, total_size, total_size)
-    (iret, msg) = rotate_client_cmd('dd if=/dev/zero of=%s/%dM bs=1M count=%d' % (
-                        path, total_size, total_size), True)
+    (iret, msg) = rotate_client_cmd('dd if=/dev/zero of=%s/%d-%dM bs=1M count=%d' % (
+                                    path, inc_base, total_size/inc_base, inc_base), True)
     if iret:
         return iret, msg
     if exceed_on == 'exceed_on_subtree':
         path = '%s%s%s' % (root_path, TMP_UPTREE, TMP_SUBTREE)
     else:
         path = '%s%s' % (root_path, TMP_UPTREE)
-    (iret, msg) = cp_dedicated(path, quota, total_size, 2, 4 )
+    total_size += inc_base
+    (iret, msg) = cp_dedicated(path, quota, total_size, inc_base, TIMES_TOLLERANCE )
     if iret:
         return iret, msg
 
@@ -187,20 +202,21 @@ def cp_dedicated (path, quota, current_size, inc_base, times_tollerance):
     total_size = current_size
     times = (quota - current_size)/inc_base + times_tollerance
     for i in range(0, times):
-        total_size += inc_base
         #print 'dd if=/dev/zero of=%s/%dM bs=1M count=%d' % (
         #                    path, total_size, inc_base)
-        (iret, msg) = rotate_client_cmd('dd if=/dev/zero of=%s/%dM bs=1M count=%d' % (
-                            path, total_size, inc_base), True)
+        (iret, msg) = rotate_client_cmd('dd if=/dev/zero of=%s/%d-%dM bs=1M count=%d' % (
+                                    path, inc_base, total_size/inc_base, inc_base), True)
         if iret:
             #print msg
             break;
+        total_size += inc_base
+        
     i += 1
     if i < times and i >= (times - times_tollerance):
         print 'Success'
         return 0, msg
     else:
-        print 'Fail: i=%d' % i     
+        print 'Fail: (i=%d) quota=%d, total=%d' % (i, quota, total_size)     
         return -1, msg
     return iret, msg
     
@@ -237,31 +253,49 @@ def prepare_subtree_env( root_path ):
 def rotate_client_cmd( remote_cmd, next_client ):
     global g_clients
     global g_client_index
-    
-    if next_client == True:
-        g_client_index += 1
-    if ( g_client_index >= len(g_clients) ):
-        g_client_index = 0
 
-    print 'SSH %s: %s ' % (g_clients[g_client_index], remote_cmd)
-    (iret, lines) = execute_ssh([ remote_cmd ], g_clients[g_client_index], 'root')
-    if iret != os.EX_OK:
-        print lines
+    if g_clients == []:
+        print '%s ' % (remote_cmd)        
+        (iret, lines) = execute_cmd([ remote_cmd ])
+        if iret != os.EX_OK:
+            print lines
+    else:
+        if next_client == True:
+            g_client_index += 1
+        if ( g_client_index >= len(g_clients) ):
+            g_client_index = 0
     
+        print 'SSH %s: %s ' % (g_clients[g_client_index], remote_cmd)
+        (iret, lines) = execute_ssh([ remote_cmd ], g_clients[g_client_index], 'root')
+        if iret != os.EX_OK:
+            print lines
+    
+    time.sleep(1)
     return iret, lines
 
 
 def multi_client_cmd( remote_cmd, fail_stop, show_msg ):
     global g_clients
-    for machine in g_clients:
-        (iret, lines) = execute_ssh([ remote_cmd ], machine, 'root')
-        print 'SSH  %s: %s ' % (machine, remote_cmd)
+    if g_clients == []:
+        (iret, lines) = execute_cmd([ remote_cmd ])
+        print '%s ' % (remote_cmd)
         if show_msg == True and len(lines) != 0:
             print lines
         #check return code, if fail, break and go_out=True        
         if iret != os.EX_OK and fail_stop == True:
             print 'Stop: CMD(%s) ON %s' % (remote_cmd, machine)
+    else :
+        for machine in g_clients:
+            (iret, lines) = execute_ssh([ remote_cmd ], machine, 'root')
+            print 'SSH  %s: %s ' % (machine, remote_cmd)
+            if show_msg == True and len(lines) != 0:
+                print lines
+            #check return code, if fail, break and go_out=True        
+            if iret != os.EX_OK and fail_stop == True:
+                print 'Stop: CMD(%s) ON %s' % (remote_cmd, machine)
+   
         
+    time.sleep(1)
     return iret, lines
 
 g_deep_layer = 0
@@ -317,7 +351,7 @@ Command:
     cmd -c remote_cmd
     create -r root_path
     create_deep -p folder_path -l deep_layer
-    subtree -r root_path -m monitor -c ['IP1','IP2'...]
+    subtree -r root_path -m monitor [ -C "['IP1','IP2'...]" ]
 '''
     parser = OptionParser(usage)
     parser.add_option('-p', '--path', dest = 'folder_path', 
@@ -363,8 +397,8 @@ Command:
                 raise Usage('You must specify the folder path by -p folder_path and deep layer by -l deep_layer')
             (iret, rmsg) = create_deep_folder( options.folder_path, options.deep_layer )
         elif command == 'subtree':
-            if options.root_path == None or options.monitor == None or g_clients == []:
-                raise Usage('You must specify the root mount path by -r, monitor by -m, Clients by -C [\'IP1\',\'IP2\'...]')
+            if options.root_path == None or options.monitor == None:
+                raise Usage('You must specify the root mount path by -r, monitor by -m [Clients by -C "[\'IP1\',\'IP2\'...]"]')
             (iret, rmsg) = subtree_test( options.root_path, options.monitor )
     except Usage, err:
         print >> sys.stderr, err.msg
