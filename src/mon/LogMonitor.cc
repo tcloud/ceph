@@ -156,6 +156,7 @@ bool LogMonitor::update_from_paxos()
   ::encode(summary, bl);
   paxos->stash_latest(paxosv, bl);
  
+#if 0
   if (blog.length())
     mon->store->append_bl_ss(blog, "log", NULL);
   if (blogdebug.length())
@@ -168,7 +169,7 @@ bool LogMonitor::update_from_paxos()
     mon->store->append_bl_ss(blogwarn, "log.warn", NULL);
   if (blogerr.length())
     mon->store->append_bl_ss(blogerr, "log.err", NULL);
-
+#endif
 
   // trim
   unsigned max = 500;
