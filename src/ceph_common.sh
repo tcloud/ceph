@@ -6,6 +6,7 @@ default_conf=$ETCDIR"/ceph.conf"
 conf=$default_conf
 
 hostname=`hostname | cut -d . -f 1`
+ip=`ifconfig tefunc | grep 'inet addr:' | cut -d: -f2 | awk '{print $1}'`
 
 figure_dirs() {
     if echo $bindir | grep -q \@; then
@@ -53,7 +54,7 @@ check_host() {
     get_conf user "" "user"
     if [ -n "$host" ]; then
 	#echo host for $name is $host, i am $hostname
-	if [ "$host" != "$hostname" ]; then
+	if [ "$host" != "$hostname" ] && [ "$host" != "$ip" ]; then
 	    # skip, unless we're starting remote daemons too
 	    if [ $allhosts -eq 0 ]; then
 		return 1
