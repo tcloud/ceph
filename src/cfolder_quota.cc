@@ -409,6 +409,7 @@ int option_parser(int argc, char ** argv, std::string &sFolderPath, std::string 
 			case 'K':
 			case 'k':
 				ullBase = 1 << 10;
+				break;
 			case 'M':
 			case 'm':
 				ullBase = 1 << 20;
