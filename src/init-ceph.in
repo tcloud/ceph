@@ -275,6 +275,14 @@ for name in $what; do
 	    do_cmd "$cmd" $runarg
 	    [ -n "$post_start" ] && do_cmd "$post_start"
 	    [ -n "$lockfile" ] && [ "$?" -eq 0 ] && touch $lockfile
+
+            get_conf_bool watchdog "0" "elaster ceph watchdog"
+            get_conf watchdogpath "" "elaster ceph watchdog path"
+	    get_conf watchdoginterval "300" "elaster ceph watchdog interval"
+
+            if [ "$watchdog" -eq 1 ] && [ -n $watchdogpath ] && [ -e $watchdogpath ]; then
+                do_cmd "$watchdogpath -p $pid_file -t $watchdoginterval"
+            fi
 	    ;;
 	
 	stop)
