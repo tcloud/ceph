@@ -80,6 +80,7 @@ check_host() {
 do_cmd() {
     if [ -z "$ssh" ]; then
 	[ $verbose -eq 1 ] && echo "--- $host# $1"
+	source /etc/profile
 	ulimit -c unlimited
 	whoami=`whoami`
 	if [ "$whoami" = "$user" ] || [ -z "$user" ]; then
@@ -89,7 +90,7 @@ do_cmd() {
 	fi
     else
 	[ $verbose -eq 1 ] && echo "--- $ssh $2 \"cd $sshdir ; ulimit -c unlimited ; $1\""
-	$ssh $2 "cd $sshdir ; ulimit -c unlimited ; $1" || { [ -z "$3" ] && echo "failed: '$ssh $1'" && exit 1; }
+	$ssh $2 "source /etc/profile ; cd $sshdir ; ulimit -c unlimited ; $1" || { [ -z "$3" ] && echo "failed: '$ssh $1'" && exit 1; }
     fi
 }
 
