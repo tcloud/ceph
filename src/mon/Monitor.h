@@ -158,6 +158,7 @@ public:
   // request routing
   struct RoutedRequest {
     uint64_t tid;
+    entity_inst_t client;
     bufferlist request_bl;
     MonSession *session;
 
