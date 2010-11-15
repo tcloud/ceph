@@ -187,7 +187,8 @@ void Paxos::share_state(MMonPaxos *m, version_t peer_first_committed, version_t 
 
 void Paxos::store_state(MMonPaxos *m)
 {
-  bool big_sync = m->values.size() > 5;
+  //bool big_sync = m->values.size() > 5;
+  bool big_sync = false;
 
   // stash?
   if (m->latest_version && m->latest_version > last_committed) {
@@ -213,12 +214,10 @@ void Paxos::store_state(MMonPaxos *m)
       break;
     last_committed = p->first;
     dout(10) << "store_state got " << last_committed << " (" << p->second.length() << " bytes)" << dendl;
-    mon->store->put_bl_sn(p->second, machine_name, last_committed, !big_sync);
+    mon->store->put_bl_sn(p->second, machine_name, last_committed, big_sync);
   }
 
-  mon->store->put_int(last_committed, machine_name, "last_committed");
-  if (big_sync)
-    mon->store->sync();
+  mon->store->put_int(last_committed, machine_name, "last_committed", big_sync);
 }
 
 
