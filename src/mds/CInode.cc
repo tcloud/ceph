@@ -2483,6 +2483,8 @@ void CInode::encode_cap_message(MClientCaps *m, Capability *cap)
   uint64_t newms = pi->client_ranges.count(client) ? pi->client_ranges[client].range.last : 0;
   m->head.max_size = MIN(oldms, newms);
 
+  m->head.quota_exceeded = pi->quota_exceeded;
+
   i = pauth ? pi:oi;
   m->head.mode = i->mode;
   m->head.uid = i->uid;

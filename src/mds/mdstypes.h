@@ -404,6 +404,7 @@ struct inode_t {
   uint32_t   time_warp_seq;  // count of (potential) mtime/atime timewarps (i.e., utimes())
 
   map<client_t,client_writeable_range_t> client_ranges;  // client(s) can write to these ranges
+  bool quota_exceeded;
 
   // dirfrag, recursive accountin
   frag_info_t dirstat;         // protected by my filelock
@@ -423,6 +424,7 @@ struct inode_t {
 	      size(0), truncate_seq(0), truncate_size(0), truncate_from(0),
 	      truncate_pending(0),
 	      time_warp_seq(0),
+	      quota_exceeded(false),
 	      version(0), file_data_version(0), xattr_version(0), last_renamed_version(0) { 
     memset(&layout, 0, sizeof(layout));
   }

@@ -2504,8 +2504,9 @@ void Server::handle_client_openc(MDRequest *mdr)
     return;
   }
 
+  //check folder quota before creating inode
   __u64 remaining_quota = 0;
-  int quota_status = 0;
+  int quota_status = 2; //no quota limit
   if (enable_folder_quota) {
     quota_status = mds->locker->check_subtree_quota(dn, &remaining_quota);
     if (!quota_status) {
@@ -2536,13 +2537,10 @@ void Server::handle_client_openc(MDRequest *mdr)
   in->inode.version = dn->pre_dirty();
   if (cmode & CEPH_FILE_MODE_WR) {
     in->inode.client_ranges[client].range.first = 0;
-    if (enable_folder_quota && 
-        quota_status == 1 && 
-        remaining_quota < in->inode.get_layout_size_increment())
-      in->inode.client_ranges[client].range.last = 0;
-    else
-      in->inode.client_ranges[client].range.last = in->inode.get_layout_size_increment();
+    in->inode.client_ranges[client].range.last = in->inode.get_layout_size_increment();
     in->inode.client_ranges[client].follows = follows;
+    if (quota_status == 1 && remaining_quota < in->inode.get_layout_size_increment())
+      in->inode.client_ranges[client].range.last = 0;
   }
   in->inode.rstat.rfiles = 1;
 
@@ -2816,7 +2814,7 @@ public:
 
     mds->server->reply_request(mdr, 0);
 
-    if (changed_ranges)
+    if (truncating_smaller || changed_ranges)
       mds->locker->share_inode_max_size(in);
   }
 };
@@ -3011,6 +3009,15 @@ void Server::handle_client_setattr(MDRequest *mdr)
     }
   }
 
+  if (g_conf.folder_quota && !truncating_smaller) {
+    // check folder quota
+    __u64 requested_size = req->head.args.setattr.size - old_size;
+    if (!mds->locker->check_subtree_quota(cur->get_parent_dn(), &requested_size)) {
+      reply_request(mdr, -EDQUOT);
+      return;
+    }
+  }
+
   bool changed_ranges = false;
 
   // project update
@@ -3099,6 +3106,13 @@ void Server::do_open_truncate(MDRequest *mdr, int cmode)
     pi->client_ranges[client].range.first = 0;
     pi->client_ranges[client].range.last = pi->get_layout_size_increment();
     pi->client_ranges[client].follows = in->find_snaprealm()->get_newest_seq();
+    if (g_conf.folder_quota) {
+      __u64 remaining_quota = 0;
+      int quota_status = 2;
+      quota_status = mds->locker->check_subtree_quota(in->get_projected_parent_dn(), &remaining_quota);
+      if (quota_status == 1 && remaining_quota < pi->get_layout_size_increment())
+        pi->client_ranges[client].range.last = 0;
+    }
   }
 
   mdr->ls = mdlog->get_current_segment();

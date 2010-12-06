@@ -662,6 +662,9 @@ struct ceph_mds_caps {
 	struct ceph_timespec mtime, atime, ctime;
 	struct ceph_file_layout layout;
 	__le32 time_warp_seq;
+
+	/* folder-quota */
+	__le32 quota_exceeded;
 } __attribute__ ((packed));
 
 /* cap release msg head */
