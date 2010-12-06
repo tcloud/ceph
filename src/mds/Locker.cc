@@ -1876,6 +1876,15 @@ void Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,clie
   inode_t *latest = in->get_projected_inode();
   uint64_t ms = ROUND_UP_TO((size+1)<<1, latest->get_layout_size_increment());
 
+  if (g_conf->folder_quota) {
+    __u64 remaining_quota = 0;
+    int ret = check_subtree_quota(in->get_projected_parent_dn(), &remaining_quota);
+    if (ret == 0 || (ret == 1 && remaining_quota < latest->get_layout_size_increment()))
+      ms = size;
+    else
+      ms = ROUND_UP_TO(size+1, latest->get_layout_size_increment());
+  }
+  
   // increase ranges as appropriate.
   // shrink to 0 if no WR|BUFFER caps issued.
   for (map<client_t,Capability*>::iterator p = in->client_caps.begin();
@@ -2577,7 +2586,7 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, inode_t *
  */
 int Locker::check_subtree_quota(CDentry *parent_dn, __u64 *size)
 {
-  int result = 1;
+  int result = 0;
   __u64 quota = 0;
   __u64 rbytes = 0;
 
@@ -2594,13 +2603,12 @@ int Locker::check_subtree_quota(CDentry *parent_dn, __u64 *size)
 
   if (quota > 0) {
     dout(10) << "check available quota: quota=" << quota << " rbytes=" << rbytes << dendl;
-    if (rbytes > quota ) {
+    if (rbytes + *size > quota) {
       result = 0;
       *size = 0;
     } else {
-      *size = quota - rbytes;
-      if ( *size > quota - rbytes)
-        result = 0;
+      result = 1;
+      *size = quota - rbytes - *size;
     }
   } else {
     result = 2;
@@ -2632,7 +2640,6 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   bool change_max = false;
   uint64_t old_max = latest->client_ranges.count(client) ? latest->client_ranges[client].range.last : 0;
   uint64_t new_max = old_max;
-  bool enable_folder_quota = g_conf->folder_quota;
   
   if (in->is_file()) {
     dout(20) << "inode is file" << dendl;
@@ -2642,23 +2649,17 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
       if (m->get_max_size() > new_max) {
 	dout(10) << "client requests file_max " << m->get_max_size()
 		 << " > max " << old_max << dendl;
-	change_max = true;
-        if (!enable_folder_quota)
-          new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
-        else
-          new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
-          //new_max = m->get_max_size();
+        change_max = true;
+        new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
       } else {
-        if (!enable_folder_quota) {
-          new_max = calc_bounding(size * 2);
-	  if (new_max < latest->get_layout_size_increment())
-	    new_max = latest->get_layout_size_increment();
+        new_max = calc_bounding(size * 2);
+        if (new_max < latest->get_layout_size_increment())
+	  new_max = latest->get_layout_size_increment();
           
-          if (new_max > old_max)
-            change_max = true;
-          else
-            new_max = old_max;
-        }
+        if (new_max > old_max)
+          change_max = true;
+        else
+          new_max = old_max;
       }
     } else {
       if (old_max) {
@@ -2738,15 +2739,20 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 
   _update_cap_fields(in, dirty, m, pi);
 
-  if (change_max) {
-    if (enable_folder_quota && new_max > old_max) {
-      __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
-      if (!check_subtree_quota(in->get_projected_parent_dn(), &requested_size))
-        new_max = old_max;
-    }
+  if (g_conf->folder_quota && new_max > old_max) {
+    new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
+    __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
+    if (!check_subtree_quota(in->get_projected_parent_dn(), &requested_size)) {
+      new_max = old_max;
+      pi->quota_exceeded = true;
+    } else
+      pi->quota_exceeded = false;
+  }
 
+  if (change_max) {
     dout(7) << "  max_size " << old_max << " -> " << new_max
 	    << " for " << *in << dendl;
+
     if (new_max) {
       pi->client_ranges[client].range.first = 0;
       pi->client_ranges[client].range.last = new_max;
