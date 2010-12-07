@@ -1638,7 +1638,7 @@ void Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,clie
 
   if (g_conf.folder_quota) {
     __u64 remaining_quota = 0;
-    int ret = check_subtree_quota(in->get_projected_parent_dn(), &remaining_quota);
+    int ret = check_subtree_quota(in->get_projected_parent_dn(), 0, &remaining_quota);
     if (ret == 0 || (ret == 1 && remaining_quota < latest->get_layout_size_increment()))
       ms = size;
     else
@@ -2347,7 +2347,7 @@ void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, inode_t *
  *   1 - quota available
  *   2 - no quota limit
  */
-int Locker::check_subtree_quota(CDentry *parent_dn, __u64 *size)
+int Locker::check_subtree_quota(CDentry *parent_dn, __u64 requested_size, __u64 *remaining_size)
 {
   int result = 0;
   __u64 quota = 0;
@@ -2366,12 +2366,14 @@ int Locker::check_subtree_quota(CDentry *parent_dn, __u64 *size)
 
   if (quota > 0) {
     dout(10) << "check available quota: quota=" << quota << " rbytes=" << rbytes << dendl;
-    if (rbytes + *size > quota) {
+    if (rbytes + requested_size > quota) {
       result = 0;
-      *size = 0;
+      if (remaining_size)
+        *remaining_size= 0;
     } else {
       result = 1;
-      *size = quota - rbytes - *size;
+      if (remaining_size)
+        *remaining_size = quota - rbytes - requested_size;
     }
   } else {
     result = 2;
@@ -2505,7 +2507,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   if (g_conf.folder_quota && new_max > old_max) {
     new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
     __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
-    if (!check_subtree_quota(in->get_projected_parent_dn(), &requested_size)) {
+    if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size)) {
       new_max = old_max;
       pi->quota_exceeded = true;
     } else

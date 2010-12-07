@@ -2508,7 +2508,7 @@ void Server::handle_client_openc(MDRequest *mdr)
   __u64 remaining_quota = 0;
   int quota_status = 2; //no quota limit
   if (enable_folder_quota) {
-    quota_status = mds->locker->check_subtree_quota(dn, &remaining_quota);
+    quota_status = mds->locker->check_subtree_quota(dn, 0, &remaining_quota);
     if (!quota_status) {
       dout(10) << "openc failed: out of folder quota" << dendl;
       reply_request(mdr, -EDQUOT);
@@ -3012,7 +3012,7 @@ void Server::handle_client_setattr(MDRequest *mdr)
   if (g_conf.folder_quota && !truncating_smaller) {
     // check folder quota
     __u64 requested_size = req->head.args.setattr.size - old_size;
-    if (!mds->locker->check_subtree_quota(cur->get_parent_dn(), &requested_size)) {
+    if (!mds->locker->check_subtree_quota(cur->get_parent_dn(), requested_size)) {
       reply_request(mdr, -EDQUOT);
       return;
     }
@@ -3109,7 +3109,7 @@ void Server::do_open_truncate(MDRequest *mdr, int cmode)
     if (g_conf.folder_quota) {
       __u64 remaining_quota = 0;
       int quota_status = 2;
-      quota_status = mds->locker->check_subtree_quota(in->get_projected_parent_dn(), &remaining_quota);
+      quota_status = mds->locker->check_subtree_quota(in->get_projected_parent_dn(), 0, &remaining_quota);
       if (quota_status == 1 && remaining_quota < pi->get_layout_size_increment())
         pi->client_ranges[client].range.last = 0;
     }
