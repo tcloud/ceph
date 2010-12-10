@@ -281,7 +281,7 @@ for name in $what; do
 	    get_conf watchdoginterval "300" "elaster ceph watchdog interval"
 
             if [ "$watchdog" -eq 1 ] && [ -n $watchdogpath ] && [ -e $watchdogpath ]; then
-                do_cmd "$watchdogpath -p $pid_file -t $watchdoginterval"
+                do_cmd "$watchdogpath -p $pid_file -t $watchdoginterval -c $cmd"
             fi
 	    ;;
 	
