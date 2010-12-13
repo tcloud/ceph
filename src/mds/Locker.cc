@@ -1804,7 +1804,7 @@ void Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,clie
     if (ret == 0 || (ret == 1 && remaining_quota < latest->get_layout_size_increment()))
       ms = size;
     else
-      ms = ROUND_UP_TO(size+1, latest->get_layout_size_increment());
+      ms = ROUND_UP_TO(size, latest->get_layout_size_increment());
   }
   
   // increase ranges as appropriate.
@@ -2576,6 +2576,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
         change_max = true;
         new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
       } else {
+#if 0
         new_max = calc_bounding(size * 2);
         if (new_max < latest->get_layout_size_increment())
 	  new_max = latest->get_layout_size_increment();
@@ -2584,6 +2585,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
           change_max = true;
         else
           new_max = old_max;
+#endif
       }
     } else {
       if (old_max) {
@@ -2664,7 +2666,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   _update_cap_fields(in, dirty, m, pi);
 
   if (g_conf->folder_quota && new_max > old_max) {
-    new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
+    new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
     __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
     if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size)) {
       new_max = old_max;
