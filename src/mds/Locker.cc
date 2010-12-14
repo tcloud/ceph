@@ -1793,18 +1793,20 @@ public:
 };
 
 
-void Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,client_writeable_range_t>& new_ranges)
+bool Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,client_writeable_range_t>& new_ranges)
 {
+  bool quota_avail = true;
   inode_t *latest = in->get_projected_inode();
   uint64_t ms = ROUND_UP_TO((size+1)<<1, latest->get_layout_size_increment());
 
   if (g_conf->folder_quota) {
     __u64 remaining_quota = 0;
     int ret = check_subtree_quota(in->get_projected_parent_dn(), 0, &remaining_quota);
-    if (ret == 0 || (ret == 1 && remaining_quota < latest->get_layout_size_increment()))
+    if (ret == 0 || (ret == 1 && remaining_quota < latest->get_layout_size_increment())) {
       ms = size;
-    else
-      ms = ROUND_UP_TO(size, latest->get_layout_size_increment());
+      quota_avail = false;
+    } else
+      ms = ROUND_UP_TO(size+1, latest->get_layout_size_increment());
   }
   
   // increase ranges as appropriate.
@@ -1826,6 +1828,7 @@ void Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,clie
       }
     }
   }
+  return quota_avail;
 }
 
 bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
@@ -1840,12 +1843,15 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     size = new_size;
   bool new_max = false;
 
-  calc_new_client_ranges(in, size, new_ranges);
+  bool quota_avail = calc_new_client_ranges(in, size, new_ranges);
+
+  dout(10) << "check_inode_max_size new_ranges " << new_ranges
+           << " was " << latest->client_ranges << dendl;
 
   if (latest->client_ranges != new_ranges)
     new_max = true;
 
-  if (!update_size && !new_max) {
+  if (!update_size && !new_max && quota_avail) {
     dout(20) << "check_inode_max_size no-op on " << *in << dendl;
     return false;
   }
@@ -1880,6 +1886,9 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     
   inode_t *pi = in->project_inode();
   pi->version = in->pre_dirty();
+
+  if (!quota_avail)
+    pi->quota_exceeded = true;
 
   if (new_max) {
     dout(10) << "check_inode_max_size client_ranges " << pi->client_ranges << " -> " << new_ranges << dendl;
