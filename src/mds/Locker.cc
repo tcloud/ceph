@@ -2753,7 +2753,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   _update_cap_fields(in, dirty, m, pi);
 
   if (g_conf->folder_quota && new_max > old_max) {
-    new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
+    new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
     __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
     if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size)) {
       new_max = old_max;
