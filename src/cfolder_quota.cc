@@ -171,7 +171,7 @@ int xattr_handler( std::string sAction, std::string sPath,
 	}
 
 	if ( sAction == "set" ){
-	    if ( 0 != fsetxattr( fd, sName.c_str(), (void *)sValue.c_str(), sValue.length(), 0) ){
+	    if ( 0 != fsetxattr( fd, sName.c_str(), (void *)sValue.c_str(), sValue.length()+1, 0) ){
 	    	snprintf(szTmp, _countof(szTmp)-1, "fsetxattr(%s) fail, errno(%d): %s",
 						sName.c_str(), errno, strerror(errno));
 	    	iRet = FQ_EXIT_UNKNOW;
@@ -200,7 +200,7 @@ void refresh_rbytes(const std::string &sPath, std::string &sRbytes)
 	int fd = open (sPath.c_str(), O_SYNC );
 	char szTmp[1024] = {0};
 	if ( fd > 0 ){
-		fsetxattr( fd, "user.refresh_rbytes", (void *)"1", 1, 0);
+		fsetxattr( fd, "user.refresh_rbytes", (void *)"1", 2, 0);
 		fgetxattr(fd, XATTR_CEPH_RBYTES, szTmp, _countof(szTmp));
 		//std::cout << "rbytes=" << szTmp << std::endl;
 		close(fd);
