@@ -13,6 +13,7 @@
  */
 
 #include "Paxos.h"
+#include "PaxosService.h"
 #include "Monitor.h"
 #include "MonitorStore.h"
 
@@ -513,7 +514,8 @@ void Paxos::handle_commit(MMonPaxos *commit)
   }
 
   store_state(commit);
-  
+  mon->paxos_service[machine_id]->update_from_paxos();
+
   commit->put();
 
   finish_contexts(waiting_for_commit);
