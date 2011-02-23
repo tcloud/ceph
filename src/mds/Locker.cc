@@ -1615,6 +1615,23 @@ void Locker::handle_inode_file_caps(MInodeFileCaps *m)
   m->put();
 }
 
+class C_MDL_ClientWantMaxSize : public Context {
+  Locker *locker;
+  CInode *in;
+  client_t client;
+  uint64_t want_max;
+public:
+  C_MDL_ClientWantMaxSize(Locker *l, CInode *i, client_t c, uint64_t m)
+    : locker(l), in(i), client(c), want_max(m) {
+    in->get(CInode::PIN_PTRWAITER);
+  }
+  void finish(int r) {
+    in->put(CInode::PIN_PTRWAITER);
+    if (in->is_auth())
+      locker->check_client_want_max(in, client, want_max);
+  }
+};
+
 
 class C_MDL_CheckMaxSize : public Context {
   Locker *locker;
@@ -1631,19 +1648,12 @@ public:
 };
 
 
-bool Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,client_writeable_range_t>& new_ranges)
+void Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,client_writeable_range_t>& new_ranges)
 {
-  bool quota_avail = true;
   inode_t *latest = in->get_projected_inode();
   uint64_t ms = ROUND_UP_TO((size+1)<<1, latest->get_layout_size_increment());
 
   if (g_conf.folder_quota) {
-    __u64 remaining_quota = 0;
-    int ret = check_subtree_quota(in->get_projected_parent_dn(), 0, &remaining_quota);
-    if (ret == 0 || (ret == 1 && remaining_quota < latest->get_layout_size_increment())) {
-      ms = size;
-      quota_avail = false;
-    } else
       ms = ROUND_UP_TO(size+1, latest->get_layout_size_increment());
   }
   
@@ -1666,10 +1676,75 @@ bool Locker::calc_new_client_ranges(CInode *in, uint64_t size, map<client_t,clie
       }
     }
   }
-  return quota_avail;
 }
 
-bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
+void Locker::check_client_want_max(CInode *in, client_t client, uint64_t want_max)
+{
+  assert(in->is_auth());
+
+  inode_t *latest = in->get_projected_inode();
+
+  dout(20) << "check_client_want_max " << *in << " client " << client << " want_max " << want_max << dendl;
+  
+  if (in->is_frozen()) {
+    dout(10) << "check_client_want_max frozen, waiting on " << *in << dendl;
+    in->add_waiter(CInode::WAIT_UNFREEZE, new C_MDL_ClientWantMaxSize(this, in, client, want_max));
+    return;
+  }
+  
+  if (!in->filelock.can_wrlock(in->get_loner()) && !in->filelock.can_force_wrlock(client)) {
+    // try again later
+    in->filelock.add_waiter(SimpleLock::WAIT_STABLE, new C_MDL_ClientWantMaxSize(this, in, client, want_max));
+    dout(10) << "check_inode_max_size can't wrlock, waiting on " << *in << dendl;
+    return;    
+  }
+
+  Mutation *mut = new Mutation;
+  mut->ls = mds->mdlog->get_current_segment();
+  
+  inode_t *pi = in->project_inode();
+  pi->version = in->pre_dirty();
+
+  if (g_conf.folder_quota && want_max) {
+    __u64 requested_size = want_max - latest->size;
+    if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size))
+      pi->quota_exceeded = true;
+    else
+      pi->quota_exceeded = false;
+  }
+
+  if (want_max) {
+    if (!pi->quota_exceeded) {
+      pi->client_ranges[client].range.first = 0;
+      pi->client_ranges[client].range.last = want_max;
+      pi->client_ranges[client].follows = in->first - 1;
+    }
+  } else 
+    pi->client_ranges.erase(client);
+  
+  // use EOpen if the file is still open; otherwise, use EUpdate.
+  // this is just an optimization to push open files forward into
+  // newer log segments.
+  LogEvent *le;
+  EMetaBlob *metablob;
+  EUpdate *eu = new EUpdate(mds->mdlog, "check_client_want_max");
+  metablob = &eu->metablob;
+  le = eu;
+
+  mds->mdlog->start_entry(le);
+  metablob->add_dir_context(in->get_projected_parent_dn()->get_dir());
+  mdcache->journal_dirty_inode(mut, metablob, in);
+
+  mds->mdlog->submit_entry(le, new C_Locker_FileUpdate_finish(this, in, mut, true));
+  wrlock_force(&in->filelock, mut);  // wrlock for duration of journal
+  mut->auth_pin(in);
+
+  // make max_size _increase_ timely
+  mds->mdlog->flush();
+}
+
+
+void Locker::check_inode_max_size(CInode *in, bool force_wrlock,
 				  bool update_size, uint64_t new_size, utime_t new_mtime)
 {
   assert(in->is_auth());
@@ -1681,7 +1756,7 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     size = new_size;
   bool new_max = false;
 
-  bool quota_avail = calc_new_client_ranges(in, size, new_ranges);
+  calc_new_client_ranges(in, size, new_ranges);
 
   dout(10) << "check_inode_max_size new_ranges " << new_ranges
            << " was " << latest->client_ranges << dendl;
@@ -1689,9 +1764,9 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
   if (latest->client_ranges != new_ranges)
     new_max = true;
 
-  if (!update_size && !new_max && quota_avail) {
+  if (!update_size && !new_max) {
     dout(20) << "check_inode_max_size no-op on " << *in << dendl;
-    return false;
+    return;
   }
 
   dout(10) << "check_inode_max_size new_ranges " << new_ranges
@@ -1701,7 +1776,7 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
   if (in->is_frozen()) {
     dout(10) << "check_inode_max_size frozen, waiting on " << *in << dendl;
     in->add_waiter(CInode::WAIT_UNFREEZE, new C_MDL_CheckMaxSize(this, in));
-    return false;
+    return;
   }
   if (!force_wrlock && !in->filelock.can_wrlock(in->get_loner())) {
     // lock?
@@ -1715,7 +1790,7 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
       // try again later
       in->filelock.add_waiter(SimpleLock::WAIT_STABLE, new C_MDL_CheckMaxSize(this, in));
       dout(10) << "check_inode_max_size can't wrlock, waiting on " << *in << dendl;
-      return false;    
+      return;    
     }
   }
 
@@ -1724,9 +1799,6 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     
   inode_t *pi = in->project_inode();
   pi->version = in->pre_dirty();
-
-  if (!quota_avail)
-    pi->quota_exceeded = true;
 
   if (new_max) {
     dout(10) << "check_inode_max_size client_ranges " << pi->client_ranges << " -> " << new_ranges << dendl;
@@ -1774,8 +1846,6 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
   // make max_size _increase_ timely
   if (new_max)
     mds->mdlog->flush();
-
-  return true;
 }
 
 
@@ -2417,25 +2487,30 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   
   if (in->is_file()) {
     dout(20) << "inode is file" << dendl;
-    if (cap && ((cap->issued() | cap->wanted()) & CEPH_CAP_ANY_FILE_WR)) {
+    if (cap && ((cap->issued() | cap->wanted()) & CEPH_CAP_ANY_FILE_WR)) {      
       dout(20) << "client has write caps; m->get_max_size="
                << m->get_max_size() << "; old_max=" << old_max << dendl;
-      if (m->get_max_size() > new_max) {
-	dout(10) << "client requests file_max " << m->get_max_size()
-		 << " > max " << old_max << dendl;
-        change_max = true;
-        new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
+      if (g_conf.folder_quota) {
+      	if (m->get_max_size() > new_max) {
+	  new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
+	  change_max = true;
+      	}
       } else {
-#if 0
-        new_max = calc_bounding(size * 2);
-        if (new_max < latest->get_layout_size_increment())
-	  new_max = latest->get_layout_size_increment();
-          
-        if (new_max > old_max)
+        if (m->get_max_size() > new_max) {
+	  dout(10) << "client requests file_max " << m->get_max_size()
+		   << " > max " << old_max << dendl;
           change_max = true;
-        else
-          new_max = old_max;
-#endif
+          new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
+        } else {
+          new_max = calc_bounding(size * 2);
+          if (new_max < latest->get_layout_size_increment())
+	    new_max = latest->get_layout_size_increment();
+          
+          if (new_max > old_max)
+            change_max = true;
+          else
+            new_max = old_max;
+        }
       }
     } else {
       if (old_max) {
@@ -2465,7 +2540,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
       }
       if (!in->filelock.can_wrlock(client) &&
 	  !in->filelock.can_force_wrlock(client)) {
-	in->filelock.add_waiter(SimpleLock::WAIT_STABLE, new C_MDL_CheckMaxSize(this, in));
+	in->filelock.add_waiter(SimpleLock::WAIT_STABLE, new C_MDL_ClientWantMaxSize(this, in, client, new_max));
 	change_max = false;
       }
     }
@@ -2515,9 +2590,8 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 
   _update_cap_fields(in, dirty, m, pi);
 
-  if (g_conf.folder_quota && new_max > old_max) {
-    new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
-    __u64 requested_size = new_max - old_max + m->get_size() - latest->size;
+  if (g_conf.folder_quota && change_max) {
+    __u64 requested_size = new_max - size;
     if (!check_subtree_quota(in->get_projected_parent_dn(), requested_size)) {
       new_max = old_max;
       pi->quota_exceeded = true;
