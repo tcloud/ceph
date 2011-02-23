@@ -26,10 +26,10 @@ def syncWrite(path, size):
         os.close(out_fd)
 
 
-def asyncWrite(path, size):
+def simpleWrite(path, size):
     try:
         f = open('/dev/zero', "r")
-        out_fd = os.open(path, os.O_CREAT | os.O_ASYNC | os.O_WRONLY)
+        out_fd = os.open(path, os.O_CREAT | os.O_WRONLY)
         while size > objsize:
             data = f.read(objsize)
             os.write(out_fd, data)
@@ -64,7 +64,7 @@ class SyncWriteThread(threading.Thread):
                 raise err
 
 
-class AsyncWriteThread(threading.Thread):
+class SimpleWriteThread(threading.Thread):
     def __init__(self, path, size):
         threading.Thread.__init__(self)
         self.path = path
@@ -72,7 +72,7 @@ class AsyncWriteThread(threading.Thread):
 
     def run(self):
         try:
-            asyncWrite(self.path, self.size)
+            simpleWrite(self.path, self.size)
         except OSError, err:
             if err.errno == errno.EDQUOT:
                 print "out of quota"
@@ -108,11 +108,11 @@ class TestSingleClient(unittest.TestCase):
         size = calcSize(self.folder_path)
         self.assertTrue(abs(size - quota) < objsize)
 
-    def testAsyncWrite(self):
+    def testSimpleWrite(self):
         filesize = 41943040
         try:
             for i in range(quota/filesize + 1):
-                asyncWrite(os.path.join(self.folder_path, str(i)), filesize)
+                simpleWrite(os.path.join(self.folder_path, str(i)), filesize)
         except OSError, err:
             self.assertEqual(err.errno, errno.EDQUOT)
 
@@ -120,12 +120,12 @@ class TestSingleClient(unittest.TestCase):
         self.assertTrue(abs(size - quota) < objsize)
 
 
-    def testAsyncWriteAndRemove(self):
+    def testSimpleWriteAndRemove(self):
         filesize = 41943040
         try:
             for i in range(2*(quota/filesize + 1)):
                 path = os.path.join(self.folder_path, str(i))
-                asyncWrite(path, filesize)
+                simpleWrite(path, filesize)
                 if i % 2 == 0:
                     os.remove(path)
         except OSError, err:
@@ -135,11 +135,11 @@ class TestSingleClient(unittest.TestCase):
         self.assertTrue(abs(size - quota) < objsize)
 
 
-    def testAsyncWriteSmallFiles(self):
+    def testSimpleWriteSmallFiles(self):
         filesize = 409600
         try:
             for i in range(quota/filesize + 1):
-                asyncWrite(os.path.join(self.folder_path, str(i)), filesize)
+                simpleWrite(os.path.join(self.folder_path, str(i)), filesize)
         except OSError, err:
             self.assertEqual(err.errno, errno.EDQUOT)
 
@@ -147,7 +147,7 @@ class TestSingleClient(unittest.TestCase):
         self.assertTrue(abs(size - quota) < objsize)
 
 
-    def testAsyncWriteInMultiLevels(self):
+    def testSimpleWriteInMultiLevels(self):
         filesize = 41943040
         levels = 10
         
@@ -165,7 +165,7 @@ class TestSingleClient(unittest.TestCase):
                 for j in range(level):
                     path = os.path.join(path, "folder")
                 path = os.path.join(path, str(i))
-                asyncWrite(path, filesize)
+                simpleWrite(path, filesize)
         except OSError, err:
             self.assertEqual(err.errno, errno.EDQUOT)
 
@@ -189,12 +189,12 @@ class TestSingleClient(unittest.TestCase):
         self.assertTrue(abs(size - quota) < objsize*len(threads))
 
 
-    def testConcurrentAsyncWrite(self):
+    def testConcurrentSimpleWrite(self):
         filesize = 41943040
         threads = list()
         
         for i in range(quota/filesize + 1):
-            t = AsyncWriteThread(os.path.join(self.folder_path, str(i)), filesize)
+            t = SimpleWriteThread(os.path.join(self.folder_path, str(i)), filesize)
             t.start()
             threads.append(t)
 
@@ -205,13 +205,13 @@ class TestSingleClient(unittest.TestCase):
         self.assertTrue(abs(size - quota) < objsize*len(threads))
     
 
-    def testConcurrentAsyncWriteToOneFile(self):
+    def testConcurrentSimpleWriteToOneFile(self):
         concurrency = 4
         filesize = [419430400, 200715200, 419430400, 100357600]
         threads = list()
         
         for i in range(concurrency):
-            t = AsyncWriteThread(os.path.join(self.folder_path, '0'), filesize[i])
+            t = SimpleWriteThread(os.path.join(self.folder_path, '0'), filesize[i])
             t.start()
             threads.append(t)
 
@@ -222,7 +222,7 @@ class TestSingleClient(unittest.TestCase):
         self.assertTrue(abs(size - quota) < objsize*len(threads))
 
 
-    def testConcurrentAsyncWriteInMultiLevels(self):
+    def testConcurrentSimpleWriteInMultiLevels(self):
         filesize = 41943040
         levels = 10
         threads = list()
@@ -240,7 +240,7 @@ class TestSingleClient(unittest.TestCase):
             for j in range(level):
                 path = os.path.join(path, "folder")
             path = os.path.join(path, str(i))
-            t = AsyncWriteThread(path, filesize)
+            t = SimpleWriteThread(path, filesize)
             t.start()
             threads.append(t)
 
