@@ -1024,11 +1024,11 @@ int main(int argc, const char **argv)
 	int id = crush_add_bucket(crush.crush, 0, b);
 	rootid = id;
 
-	char format[20];
+	char format[20] = {0};
 	if (l.size)
 	  snprintf(format, sizeof(format), "%s%%d", l.name);
 	else
-	  strcpy(format, l.name);
+	  strncpy(format, l.name, sizeof(format)-1);
 	char name[20];
 	snprintf(name, sizeof(name), format, i);
 	crush.set_item_name(id, name);

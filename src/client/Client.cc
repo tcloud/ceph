@@ -3979,7 +3979,8 @@ void Client::seekdir(dir_result_t *dirp, loff_t offset)
 //};
 void Client::fill_dirent(struct dirent *de, const char *name, int type, uint64_t ino, loff_t next_off)
 {
-  strncpy(de->d_name, name, 256);
+  memset(de->d_name, 0, 256);
+  strncpy(de->d_name, name, 255);
 #ifndef __CYGWIN__
   de->d_ino = ino;
 #ifndef DARWIN
