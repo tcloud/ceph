@@ -2653,7 +2653,16 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
       	if (m->get_max_size() > new_max) {
 	  new_max = ROUND_UP_TO(m->get_max_size()+1, latest->get_layout_size_increment());
 	  change_max = true;
-      	}
+      	} else {
+	  new_max = ROUND_UP_TO(size, latest->get_layout_size_increment());
+          if (new_max < latest->get_layout_size_increment())
+	    new_max = latest->get_layout_size_increment();
+          
+          if (new_max > old_max)
+            change_max = true;
+          else
+            new_max = old_max;
+	}
       } else {
         if (m->get_max_size() > new_max) {
 	  dout(10) << "client requests file_max " << m->get_max_size()
