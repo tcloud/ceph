@@ -1568,7 +1568,7 @@ void PG::activate(ObjectStore::Transaction& t, list<Context*>& tfin,
   } else {
     dout(10) << "activate - not complete, " << missing << dendl;
     log.complete_to = log.log.begin();
-    while (log.complete_to->version <= info.last_complete)
+    while (log.complete_to->version <= info.last_complete && log.complete_to != log.log.end())
       log.complete_to++;
     assert(log.complete_to != log.log.end());
     log.last_requested = 0;
