@@ -1656,7 +1656,8 @@ void OSD::handle_osd_ping(MOSDPing *m)
       
       // remove from failure lists if needed
       if (failure_pending.count(from)) {
-	send_still_alive(from);
+	if (locked)
+	  send_still_alive(from);
 	failure_pending.erase(from);
       }
       failure_queue.erase(from);
