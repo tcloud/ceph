@@ -847,6 +847,8 @@ int main(int argc, const char **argv)
     } else if (CEPH_ARGPARSE_EQ("size", 's')) {
       CEPH_ARGPARSE_SET_ARG_VAL(&size, OPT_LONGLONG);
       size <<= 20; // MB -> bytes
+    } else if (CEPH_ARGPARSE_EQ("size_bytes", '\0')) {
+      CEPH_ARGPARSE_SET_ARG_VAL(&size, OPT_LONGLONG);
     } else if (CEPH_ARGPARSE_EQ("order", '\0')) {
       CEPH_ARGPARSE_SET_ARG_VAL(&order, OPT_INT);
     } else if (CEPH_ARGPARSE_EQ("path", '\0')) {
