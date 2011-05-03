@@ -1242,7 +1242,7 @@ void Locker::file_update_finish(CInode *in, Mutation *mut, bool share, client_t 
     if (gather)
       eval_cap_gather(in);
   } else {
-    if (cap && (cap->wanted() & ~cap->pending())) {
+    if (!cap || (cap && (cap->wanted() & ~cap->pending()))) {
       issue_caps(in, cap);
     }
   
