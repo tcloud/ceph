@@ -3958,7 +3958,7 @@ PG::RecoveryState::Reset::react(const AdvMap& advmap) {
 boost::statechart::result 
 PG::RecoveryState::Reset::react(const ActMap&) {
   PG *pg = context< RecoveryMachine >().pg;
-  if (pg->is_stray() && pg->get_primary() >= 0) {
+  if (pg->get_role() >= 0 && pg->is_stray() && pg->get_primary() >= 0) {
     context< RecoveryMachine >().send_notify(pg->get_primary(),
 					     pg->info);
   }
