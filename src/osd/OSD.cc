@@ -1490,7 +1490,7 @@ void OSD::update_heartbeat_peers()
     assert(old_con.count(p->first));
     if (heartbeat_to.count(p->first) && heartbeat_con[p->first] == old_con[p->first])
       continue;
-    assert(p->second <= osdmap->get_epoch());
+    //assert(p->second <= osdmap->get_epoch());
 
     // share latest map with this peer so they know not to expect
     // heartbeats from us.  otherwise they may mark us down!
