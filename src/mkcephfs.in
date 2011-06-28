@@ -241,6 +241,12 @@ if [ -n "$initdaemon" ]; then
     name="$type.$id"
     
     if [ $type = "osd" ]; then
+        get_conf osd_data "" "osd data"
+        get_conf osd_journal "" "osd journal"
+
+        test -d $osd_data || mkdir -p $osd_data
+        [ -n "$osd_journal" ] && test -d $osd_journal || mkdir -p `dirname $osd_journal`
+
 	$BINDIR/cosd -c $conf --monmap $dir/monmap -i $id --mkfs
 	create_private_key
     fi
