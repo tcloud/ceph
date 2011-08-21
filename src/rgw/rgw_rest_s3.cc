@@ -556,9 +556,14 @@ static bool parse_rfc1123(const char *s, struct tm *t)
   return check_str_end(strptime(s, "%a, %d %b %Y %H:%M:%S GMT", t));
 }
 
+static bool parse_cloudberry(const char *s, struct tm *t)
+{
+  return check_str_end(strptime(s, "%a, %d %b %Y %H:%M:%S +0000", t));
+}
+
 static bool parse_rfc2616(const char *s, struct tm *t)
 {
-  return parse_rfc850(s, t) || parse_asctime(s, t) || parse_rfc1123(s, t);
+  return parse_rfc850(s, t) || parse_asctime(s, t) || parse_rfc1123(s, t) || parse_cloudberry(s, t);
 }
 
 static inline bool is_base64_for_content_md5(unsigned char c) {
