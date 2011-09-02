@@ -32,7 +32,6 @@
 #include "LocalLock.h"
 #include "Capability.h"
 #include "snap.h"
-#include "SessionMap.h"
 
 #include <list>
 #include <vector>
@@ -351,7 +350,7 @@ public:
     }
     return &snaprealm->srnode;
   }
-  void project_past_snaprealm_parent(SnapRealm *newparent, bufferlist& snapbl);
+  void project_past_snaprealm_parent(SnapRealm *newparent);
 
 private:
   void pop_projected_snaprealm(sr_t *next_snaprealm);
@@ -528,11 +527,11 @@ private:
 
   inodeno_t ino() const { return inode.ino; }
   vinodeno_t vino() const { return vinodeno_t(inode.ino, last); }
-  int d_type() const { return MODE_TO_DT(inode.mode); }
+  int d_type() const { return IFTODT(inode.mode); }
 
   inode_t& get_inode() { return inode; }
   CDentry* get_parent_dn() { return parent; }
-  CDentry* get_projected_parent_dn() { return projected_parent.size() ? projected_parent.back():parent; }
+  CDentry* get_projected_parent_dn() { return !projected_parent.empty() ? projected_parent.back() : parent; }
   CDir *get_parent_dir();
   CDir *get_projected_parent_dir();
   CInode *get_parent_inode();

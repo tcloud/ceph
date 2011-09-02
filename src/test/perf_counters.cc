@@ -37,7 +37,7 @@
 
 TEST(PerfCounters, SimpleTest) {
   g_ceph_context->_conf->set_val_or_die("admin_socket", get_rand_socket_path());
-  g_ceph_context->_conf->apply_changes();
+  g_ceph_context->_conf->apply_changes(NULL);
   AdminSocketClient client(get_rand_socket_path());
   std::string message;
   ASSERT_EQ("", client.get_message(&message));
@@ -79,23 +79,23 @@ TEST(PerfCounters, SinglePerfCounters) {
   PerfCounters* fake_pf = setup_test_perfcounters1(g_ceph_context);
   coll->logger_add(fake_pf);
   g_ceph_context->_conf->set_val_or_die("admin_socket", get_rand_socket_path());
-  g_ceph_context->_conf->apply_changes();
+  g_ceph_context->_conf->apply_changes(NULL);
   AdminSocketClient client(get_rand_socket_path());
   std::string msg;
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':0,"
-	    "'element2':0,'element3':{'count':0,'sum':0}}}"), msg);
+	    "'element2':0,'element3':{'avgcount':0,'sum':0}}}"), msg);
   fake_pf->inc(TEST_PERFCOUNTERS1_ELEMENT_1);
   fake_pf->fset(TEST_PERFCOUNTERS1_ELEMENT_2, 0.5);
   fake_pf->finc(TEST_PERFCOUNTERS1_ELEMENT_3, 100.0);
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':1,"
-	    "'element2':0.5,'element3':{'count':1,'sum':100}}}"), msg);
+	    "'element2':0.5,'element3':{'avgcount':1,'sum':100}}}"), msg);
   fake_pf->finc(TEST_PERFCOUNTERS1_ELEMENT_3, 0.0);
   fake_pf->finc(TEST_PERFCOUNTERS1_ELEMENT_3, 25.0);
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':1,'element2':0.5,"
-	    "'element3':{'count':3,'sum':125}}}"), msg);
+	    "'element3':{'avgcount':3,'sum':125}}}"), msg);
 }
 
 enum {
@@ -122,25 +122,27 @@ TEST(PerfCounters, MultiplePerfCounters) {
   coll->logger_add(fake_pf1);
   coll->logger_add(fake_pf2);
   g_ceph_context->_conf->set_val_or_die("admin_socket", get_rand_socket_path());
-  g_ceph_context->_conf->apply_changes();
+  g_ceph_context->_conf->apply_changes(NULL);
   AdminSocketClient client(get_rand_socket_path());
   std::string msg;
 
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':0,'element2':0,'element3':"
-	    "{'count':0,'sum':0}},'test_perfcounter_2':{'foo':0,'bar':0}}"), msg);
+	    "{'avgcount':0,'sum':0}},'test_perfcounter_2':{'foo':0,'bar':0}}"), msg);
 
   fake_pf1->inc(TEST_PERFCOUNTERS1_ELEMENT_1);
   fake_pf1->inc(TEST_PERFCOUNTERS1_ELEMENT_1, 5);
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':6,'element2':0,'element3':"
-	    "{'count':0,'sum':0}},'test_perfcounter_2':{'foo':0,'bar':0}}"), msg);
+	    "{'avgcount':0,'sum':0}},'test_perfcounter_2':{'foo':0,'bar':0}}"), msg);
 
   coll->logger_remove(fake_pf2);
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':6,'element2':0,"
-	    "'element3':{'count':0,'sum':0}}}"), msg);
-
+	    "'element3':{'avgcount':0,'sum':0}}}"), msg);
+  ASSERT_EQ("", client.get_schema(&msg));
+  ASSERT_EQ(sd("{'test_perfcounter_1':{'element1':{'type':2},"
+	       "'element2':{'type':1},'element3':{'type':5}}}"), msg);
   coll->logger_clear();
   ASSERT_EQ("", client.get_message(&msg));
   ASSERT_EQ("{}", msg);

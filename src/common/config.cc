@@ -13,30 +13,22 @@
  */
 
 #include "auth/Auth.h"
-#include "common/BackTrace.h"
-#include "common/Clock.h"
 #include "common/ConfUtils.h"
-#include "common/DoutStreambuf.h"
-#include "common/perf_counters.h"
 #include "common/ceph_argparse.h"
-#include "global/global_init.h"
+#include "common/common_init.h"
 #include "common/config.h"
-#include "common/dyn_snprintf.h"
 #include "common/static_assert.h"
 #include "common/strtol.h"
 #include "common/version.h"
-#include "include/atomic.h"
 #include "include/str_list.h"
 #include "include/types.h"
 #include "msg/msg_types.h"
 #include "osd/osd_types.h"
 
 #include <errno.h>
-#include <fcntl.h>
-#include <fstream>
+#include <sstream>
 #include <stdlib.h>
 #include <string.h>
-#include <syslog.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -45,8 +37,10 @@
  * initialization happens here.
  */
 #undef dout
+#undef ldout
 #undef pdout
 #undef derr
+#undef lderr
 #undef generic_dout
 #undef dendl
 
@@ -124,6 +118,8 @@ const void *config_option::conf_ptr(const md_config_t *conf) const
   return v;
 }
 
+/* All options must appear here, or else they won't be initialized
+ * when md_config_t is created. */
 struct config_option config_optionsp[] = {
   OPTION(folder_quota, OPT_INT, 0),
   OPTION(host, OPT_STR, "localhost"),
@@ -135,7 +131,6 @@ struct config_option config_optionsp[] = {
   OPTION(daemonize, OPT_BOOL, false),
   OPTION(admin_socket, OPT_STR, ""),
   OPTION(log_file, OPT_STR, 0),
-  OPTION(log_dir, OPT_STR, 0),
   OPTION(log_sym_dir, OPT_STR, 0),
   OPTION(log_sym_history, OPT_INT, 10),
   OPTION(log_to_stderr, OPT_INT, LOG_TO_STDERR_ALL),
@@ -151,6 +146,7 @@ struct config_option config_optionsp[] = {
   OPTION(debug_context, OPT_INT, 0),
   OPTION(debug_mds, OPT_INT, 1),
   OPTION(debug_mds_balancer, OPT_INT, 1),
+  OPTION(debug_mds_locker, OPT_INT, 1),
   OPTION(debug_mds_log, OPT_INT, 1),
   OPTION(debug_mds_log_expire, OPT_INT, 1),
   OPTION(debug_mds_migrator, OPT_INT, 1),
@@ -174,9 +170,12 @@ struct config_option config_optionsp[] = {
   OPTION(debug_tp, OPT_INT, 0),
   OPTION(debug_auth, OPT_INT, 1),
   OPTION(debug_finisher, OPT_INT, 1),
+  OPTION(debug_heartbeatmap, OPT_INT, 1),
   OPTION(key, OPT_STR, 0),
   OPTION(keyfile, OPT_STR, 0),
   OPTION(keyring, OPT_STR, "/etc/ceph/keyring,/etc/ceph/keyring.bin"),
+  OPTION(heartbeat_interval, OPT_INT, 5),
+  OPTION(heartbeat_file, OPT_STR, NULL),
   OPTION(ms_tcp_nodelay, OPT_BOOL, true),
   OPTION(ms_initial_backoff, OPT_DOUBLE, .2),
   OPTION(ms_max_backoff, OPT_DOUBLE, 15.0),
@@ -233,6 +232,7 @@ struct config_option config_optionsp[] = {
   OPTION(client_oc_target_dirty, OPT_INT, 1024*1024* 8), // target dirty (keep this smallish)
   // note: the max amount of "in flight" dirty data is roughly (max - target)
   OPTION(client_oc_max_sync_write, OPT_U64, 128*1024),   // sync writes >= this use wrlock
+  OPTION(fuse_use_invalidate_cb, OPT_BOOL, false), // use fuse 2.8+ invalidate callback to keep page cache consistent
   OPTION(objecter_tick_interval, OPT_DOUBLE, 5.0),
   OPTION(objecter_mon_retry_interval, OPT_DOUBLE, 5.0),
   OPTION(objecter_timeout, OPT_DOUBLE, 10.0),    // before we ask for a map
@@ -309,6 +309,7 @@ struct config_option config_optionsp[] = {
   OPTION(mds_kill_mdstable_at, OPT_INT, 0),
   OPTION(mds_kill_export_at, OPT_INT, 0),
   OPTION(mds_kill_import_at, OPT_INT, 0),
+  OPTION(mds_kill_link_at, OPT_INT, 0),
   OPTION(mds_kill_rename_at, OPT_INT, 0),
   OPTION(mds_wipe_sessions, OPT_BOOL, 0),
   OPTION(mds_wipe_ino_prealloc, OPT_BOOL, 0),
@@ -344,6 +345,13 @@ struct config_option config_optionsp[] = {
   OPTION(osd_max_opq, OPT_INT, 10),
   OPTION(osd_disk_threads, OPT_INT, 1),
   OPTION(osd_recovery_threads, OPT_INT, 1),
+  OPTION(osd_op_thread_timeout, OPT_INT, 30),
+  OPTION(osd_backlog_thread_timeout, OPT_INT, 60*60*1),
+  OPTION(osd_recovery_thread_timeout, OPT_INT, 30),
+  OPTION(osd_snap_trim_thread_timeout, OPT_INT, 60*60*1),
+  OPTION(osd_scrub_thread_timeout, OPT_INT, 60),
+  OPTION(osd_scrub_finalize_thread_timeout, OPT_INT, 60*10),
+  OPTION(osd_remove_thread_timeout, OPT_INT, 60*60),
   OPTION(osd_age, OPT_FLOAT, .8),
   OPTION(osd_age_time, OPT_INT, 0),
   OPTION(osd_heartbeat_interval, OPT_INT, 1),
@@ -394,6 +402,7 @@ struct config_option config_optionsp[] = {
   OPTION(filestore_queue_committing_max_ops, OPT_INT, 500),        // this is ON TOP of filestore_queue_max_*
   OPTION(filestore_queue_committing_max_bytes, OPT_INT, 100 << 20), //  "
   OPTION(filestore_op_threads, OPT_INT, 2),
+  OPTION(filestore_op_thread_timeout, OPT_INT, 60),
   OPTION(filestore_commit_timeout, OPT_FLOAT, 600),
   OPTION(filestore_fiemap_threshold, OPT_INT, 4096),
   OPTION(journal_dio, OPT_BOOL, true),
@@ -417,6 +426,7 @@ struct config_option config_optionsp[] = {
   OPTION(rgw_cache_enabled, OPT_BOOL, false),   // rgw cache enabled
   OPTION(rgw_cache_lru_size, OPT_INT, 10000),   // num of entries in rgw cache
   OPTION(rgw_socket_path, OPT_STR, NULL),   // path to unix domain socket, if not specified, rgw will not run as external fcgi
+  OPTION(rgw_op_thread_timeout, OPT_INT, 10*60),
 
   // see config.h
   OPTION(internal_safe_to_start_threads, OPT_BOOL, false),
@@ -446,15 +456,8 @@ bool ceph_resolve_file_search(const std::string& filename_list,
 
 md_config_t::
 md_config_t()
+  : lock("md_config_t", true)
 {
-  //
-  // Note: because our md_config_t structure is a global, the memory used to
-  // store it will start out zeroed. So there is no need to manually initialize
-  // everything to 0 here.
-  //
-  // However, it's good practice to add your new config option to config_optionsp
-  // so that its default value is explicit rather than implicit.
-  //
   for (int i = 0; i < NUM_CONFIG_OPTIONS; i++) {
     config_option *opt = config_optionsp + i;
     set_val_from_default(opt);
@@ -470,6 +473,7 @@ md_config_t::
 void md_config_t::
 add_observer(md_config_obs_t* observer_)
 {
+  Mutex::Locker l(lock);
   const char **keys = observer_->get_tracked_conf_keys();
   for (const char ** k = keys; *k; ++k) {
     obs_map_t::value_type val(*k, observer_);
@@ -480,6 +484,7 @@ add_observer(md_config_obs_t* observer_)
 void md_config_t::
 remove_observer(md_config_obs_t* observer_)
 {
+  Mutex::Locker l(lock);
   bool found_obs = false;
   for (obs_map_t::iterator o = observers.begin(); o != observers.end(); ) {
     if (o->second == observer_) {
@@ -497,6 +502,9 @@ int md_config_t::
 parse_config_files(const char *conf_files,
 		   std::deque<std::string> *parse_errors, int flags)
 {
+  Mutex::Locker l(lock);
+  if (internal_safe_to_start_threads)
+    return -ENOSYS;
   if (!conf_files) {
     const char *c = getenv("CEPH_CONF");
     if (c) {
@@ -517,6 +525,7 @@ int md_config_t::
 parse_config_files_impl(const std::list<std::string> &conf_files,
 		   std::deque<std::string> *parse_errors)
 {
+  Mutex::Locker l(lock);
   // open new conf
   list<string>::const_iterator c;
   for (c = conf_files.begin(); c != conf_files.end(); ++c) {
@@ -569,13 +578,21 @@ parse_config_files_impl(const std::list<std::string> &conf_files,
 void md_config_t::
 parse_env()
 {
+  Mutex::Locker l(lock);
+  if (internal_safe_to_start_threads)
+    return;
   if (getenv("CEPH_KEYRING"))
     keyring = getenv("CEPH_KEYRING");
 }
 
-void md_config_t::
+int md_config_t::
 parse_argv(std::vector<const char*>& args)
 {
+  Mutex::Locker l(lock);
+  if (internal_safe_to_start_threads) {
+    return -ENOSYS;
+  }
+
   // In this function, don't change any parts of the configuration directly.
   // Instead, use set_val to set them. This will allow us to send the proper
   // observer notifications later.
@@ -591,7 +608,7 @@ parse_argv(std::vector<const char*>& args)
     }
     else if (ceph_argparse_flag(args, i, "-d", (char*)NULL)) {
       set_val_or_die("daemonize", "false");
-      set_val_or_die("log_dir", "");
+      set_val_or_die("log_file", "");
       set_val_or_die("pid_file", "");
       set_val_or_die("log_sym_dir", "");
       set_val_or_die("log_sym_history", "0");
@@ -603,22 +620,22 @@ parse_argv(std::vector<const char*>& args)
     // Careful: you can burn through the alphabet pretty quickly by adding
     // to this list.
     else if (ceph_argparse_witharg(args, i, &val, "--monmap", "-M", (char*)NULL)) {
-      set_val("monmap", val.c_str());
+      set_val_or_die("monmap", val.c_str());
     }
     else if (ceph_argparse_witharg(args, i, &val, "--mon_host", "-m", (char*)NULL)) {
-      set_val("mon_host", val.c_str());
+      set_val_or_die("mon_host", val.c_str());
     }
     else if (ceph_argparse_witharg(args, i, &val, "--bind", (char*)NULL)) {
-      set_val("public_addr", val.c_str());
+      set_val_or_die("public_addr", val.c_str());
     }
     else if (ceph_argparse_witharg(args, i, &val, "--keyfile", "-K", (char*)NULL)) {
-      set_val("keyfile", val.c_str());
+      set_val_or_die("keyfile", val.c_str());
     }
     else if (ceph_argparse_witharg(args, i, &val, "--keyring", "-k", (char*)NULL)) {
-      set_val("keyring", val.c_str());
+      set_val_or_die("keyring", val.c_str());
     }
     else if (ceph_argparse_witharg(args, i, &val, "--client_mountpoint", "-r", (char*)NULL)) {
-      set_val("client_mountpoint", val.c_str());
+      set_val_or_die("client_mountpoint", val.c_str());
     }
     else {
       int o;
@@ -643,11 +660,50 @@ parse_argv(std::vector<const char*>& args)
       }
     }
   }
+  return 0;
+}
+
+int md_config_t::parse_injectargs(std::vector<const char*>& args,
+      std::ostringstream *oss)
+{
+  assert(lock.is_locked());
+  std::string val;
+  int ret = 0;
+  for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
+    int o;
+    for (o = 0; o < NUM_CONFIG_OPTIONS; ++o) {
+      const config_option *opt = config_optionsp + o;
+      std::string as_option("--");
+      as_option += opt->name;
+      if ((opt->type == OPT_BOOL) &&
+	  ceph_argparse_flag(args, i, as_option.c_str(), (char*)NULL)) {
+	set_val_impl("true", opt);
+	break;
+      }
+      else if (ceph_argparse_witharg(args, i, &val,
+				     as_option.c_str(), (char*)NULL)) {
+	if (((opt->type == OPT_STR) || (opt->type == OPT_ADDR)) &&
+	    (observers.find(opt->name) == observers.end())) {
+	  *oss << "You cannot change " << opt->name << " using injectargs.\n";
+	  ret = -ENOSYS;
+	  break;
+	}
+	set_val_impl(val.c_str(), opt);
+	break;
+      }
+    }
+    if (o == NUM_CONFIG_OPTIONS) {
+      // ignore
+      ++i;
+    }
+  }
+  return ret;
 }
 
 void md_config_t::
-apply_changes()
+apply_changes(std::ostringstream *oss)
 {
+  Mutex::Locker l(lock);
   /* Maps observers to the configuration options that they care about which
    * have changed. */
   typedef std::map < md_config_obs_t*, std::set <std::string> > rev_obs_map_t;
@@ -665,9 +721,15 @@ apply_changes()
   // changed keys that they'll get.
   rev_obs_map_t robs;
   std::set <std::string> empty_set;
+  char buf[128];
+  char *bufptr = (char*)buf;
   for (changed_set_t::const_iterator c = changed.begin();
        c != changed.end(); ++c) {
     const std::string &key(*c);
+    if ((oss) && (!get_val(key.c_str(), &bufptr, sizeof(buf)))) {
+      (*oss) << "applying configuration change: " << key << " = '"
+		     << buf << "'\n";
+    }
     pair < obs_map_t::iterator, obs_map_t::iterator >
       range(observers.equal_range(key));
     for (obs_map_t::iterator r = range.first; r != range.second; ++r) {
@@ -687,9 +749,11 @@ apply_changes()
   changed.clear();
 }
 
-void md_config_t::
-injectargs(const std::string& s)
+int md_config_t::
+injectargs(const std::string& s, std::ostringstream *oss)
 {
+  int ret;
+  Mutex::Locker l(lock);
   char b[s.length()+1];
   strcpy(b, s.c_str());
   std::vector<const char*> nargs;
@@ -702,8 +766,20 @@ injectargs(const std::string& s)
     *p++ = 0;
     while (*p && *p == ' ') p++;
   }
-  parse_argv(nargs);
-  apply_changes();
+  ret = parse_injectargs(nargs, oss);
+  if (!nargs.empty()) {
+    *oss << "ERROR: failed to parse arguments: ";
+    std::string prefix;
+    for (std::vector<const char*>::const_iterator i = nargs.begin();
+	 i != nargs.end(); ++i) {
+      *oss << prefix << *i;
+      prefix = ",";
+    }
+    *oss << "\n";
+    ret = -EINVAL;
+  }
+  apply_changes(oss);
+  return ret;
 }
 
 void md_config_t::
@@ -716,6 +792,7 @@ set_val_or_die(const char *key, const char *val)
 int md_config_t::
 set_val(const char *key, const char *val)
 {
+  Mutex::Locker l(lock);
   if (!key)
     return -EINVAL;
   if (!val)
@@ -728,8 +805,20 @@ set_val(const char *key, const char *val)
 
   for (int i = 0; i < NUM_CONFIG_OPTIONS; ++i) {
     config_option *opt = &config_optionsp[i];
-    if (strcmp(opt->name, k.c_str()) == 0)
+    if (strcmp(opt->name, k.c_str()) == 0) {
+      if (internal_safe_to_start_threads) {
+	// If threads have been started...
+	if ((opt->type == OPT_STR) || (opt->type == OPT_ADDR)) {
+	  // And this is NOT an integer valued variable....
+	  if (observers.find(opt->name) == observers.end()) {
+	    // And there is no observer to safely change it...
+	    // You lose.
+	    return -ENOSYS;
+	  }
+	}
+      }
       return set_val_impl(v.c_str(), opt);
+    }
   }
 
   // couldn't find a configuration option with key 'key'
@@ -740,6 +829,7 @@ set_val(const char *key, const char *val)
 int md_config_t::
 get_val(const char *key, char **buf, int len) const
 {
+  Mutex::Locker l(lock);
   if (!key)
     return -EINVAL;
 
@@ -804,6 +894,7 @@ get_val(const char *key, char **buf, int len) const
 void md_config_t::
 get_my_sections(std::vector <std::string> &sections) const
 {
+  Mutex::Locker l(lock);
   sections.push_back(name.to_str());
 
   sections.push_back(name.get_type_name());
@@ -815,6 +906,7 @@ get_my_sections(std::vector <std::string> &sections) const
 int md_config_t::
 get_all_sections(std::vector <std::string> &sections) const
 {
+  Mutex::Locker l(lock);
   for (ConfFile::const_section_iter_t s = cf.sections_begin();
        s != cf.sections_end(); ++s) {
     sections.push_back(s->first);
@@ -826,6 +918,7 @@ int md_config_t::
 get_val_from_conf_file(const std::vector <std::string> &sections,
 		    const char *key, std::string &out, bool emeta) const
 {
+  Mutex::Locker l(lock);
   std::vector <std::string>::const_iterator s = sections.begin();
   std::vector <std::string>::const_iterator s_end = sections.end();
   for (; s != s_end; ++s) {
@@ -844,6 +937,7 @@ get_val_from_conf_file(const std::vector <std::string> &sections,
 void md_config_t::
 set_val_from_default(const config_option *opt)
 {
+  Mutex::Locker l(lock);
   // set_val_from_default can't fail! Unless the programmer screwed up, and
   // in that case we'll abort.
   // Anyway, we know that this function changed something.
@@ -909,6 +1003,7 @@ set_val_from_default(const config_option *opt)
 int md_config_t::
 set_val_impl(const char *val, const config_option *opt)
 {
+  assert(lock.is_locked());
   int ret = set_val_raw(val, opt);
   if (ret)
     return ret;
@@ -919,6 +1014,7 @@ set_val_impl(const char *val, const config_option *opt)
 int md_config_t::
 set_val_raw(const char *val, const config_option *opt)
 {
+  assert(lock.is_locked());
   switch (opt->type) {
     case OPT_INT: {
       std::string err;
@@ -993,6 +1089,7 @@ static const int NUM_CONF_METAVARIABLES =
 bool md_config_t::
 expand_meta(std::string &val) const
 {
+  assert(lock.is_locked());
   bool found_meta = false;
   string out;
   string::size_type sz = val.size();

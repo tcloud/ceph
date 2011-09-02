@@ -12,8 +12,6 @@
  * 
  */
 
-
-
 #include "FileStore.h"
 #include "common/BackTrace.h"
 #include "include/types.h"
@@ -32,7 +30,6 @@
 #include "common/perf_counters.h"
 #include "common/sync_filesystem.h"
 
-#define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -875,7 +872,8 @@ FileStore::FileStore(const std::string &base, const std::string &jdev) :
   timer(g_ceph_context, sync_entry_timeo_lock),
   stop(false), sync_thread(this),
   op_queue_len(0), op_queue_bytes(0), op_finisher(g_ceph_context), next_finish(0),
-  op_tp(g_ceph_context, "FileStore::op_tp", g_conf->filestore_op_threads), op_wq(this, &op_tp),
+  op_tp(g_ceph_context, "FileStore::op_tp", g_conf->filestore_op_threads),
+  op_wq(this, g_conf->filestore_op_thread_timeout, &op_tp),
   flusher_queue_len(0), flusher_thread(this),
   logger(NULL)
 {
@@ -1885,25 +1883,25 @@ void FileStore::start_logger(int whoami, utime_t tare)
   snprintf(name, sizeof(name), "osd.%d.fs.log", whoami);
   PerfCountersBuilder plb(g_ceph_context, name, l_os_first, l_os_last);
 
-  plb.add_u64(l_os_in_ops, "in_o");
-  //plb.add_u64(l_os_in_bytes, "in_b");
-  plb.add_u64(l_os_readable_ops, "or_o");
-  plb.add_u64(l_os_readable_bytes, "or_b");
-  //plb.add_u64(l_os_commit_bytes, "com_o");
-  //plb.add_u64(l_os_commit_bytes, "com_b");
+  plb.add_u64_counter(l_os_in_ops, "in_o");
+  //plb.add_u64_counter(l_os_in_bytes, "in_b");
+  plb.add_u64_counter(l_os_readable_ops, "or_o");
+  plb.add_u64_counter(l_os_readable_bytes, "or_b");
+  //plb.add_u64_counter(l_os_commit_bytes, "com_o");
+  //plb.add_u64_counter(l_os_commit_bytes, "com_b");
 
   plb.add_u64(l_os_jq_max_ops, "jq_mo");
   plb.add_u64(l_os_jq_ops, "jq_o");
-  plb.add_u64(l_os_j_ops, "j_o");
+  plb.add_u64_counter(l_os_j_ops, "j_o");
   plb.add_u64(l_os_jq_max_bytes, "jq_mb");
   plb.add_u64(l_os_jq_bytes, "jq_b");
-  plb.add_u64(l_os_j_bytes, "j_b");
+  plb.add_u64_counter(l_os_j_bytes, "j_b");
   plb.add_u64(l_os_oq_max_ops, "oq_mo");
   plb.add_u64(l_os_oq_ops, "oq_o");
-  plb.add_u64(l_os_ops, "o");
+  plb.add_u64_counter(l_os_ops, "o");
   plb.add_u64(l_os_oq_max_bytes, "oq_mb");
   plb.add_u64(l_os_oq_bytes, "oq_b");
-  plb.add_u64(l_os_bytes, "b");
+  plb.add_u64_counter(l_os_bytes, "b");
   plb.add_u64(l_os_committing, "comitng");
 
   logger = plb.create_perf_counters();
@@ -3172,9 +3170,12 @@ void FileStore::sync_entry()
 
 	  dout(10) << "taking snap '" << vol_args.name << "'" << dendl;
 	  int r = ::ioctl(basedir_fd, BTRFS_IOC_SNAP_CREATE, &vol_args);
-	  char buf[100];
-	  dout(20) << "snap create '" << vol_args.name << "' got " << r
-		   << " " << strerror_r(r < 0 ? errno : 0, buf, sizeof(buf)) << dendl;
+	  if (r != 0) {
+	    int err = errno;
+	    derr << "snap create '" << vol_args.name << "' got error " << err << dendl;
+	    assert(r == 0);
+	  }
+	  dout(20) << "snap create '" << vol_args.name << "' succeeded." << dendl;
 	  assert(r == 0);
 	  snaps.push_back(cp);
 	  

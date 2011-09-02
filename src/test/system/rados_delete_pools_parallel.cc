@@ -15,6 +15,7 @@
 #include "cross_process_sem.h"
 #include "include/rados/librados.h"
 #include "st_rados_create_pool.h"
+#include "st_rados_delete_pool.h"
 #include "st_rados_list_objects.h"
 #include "systest_runnable.h"
 #include "systest_settings.h"
@@ -47,48 +48,6 @@ static int g_num_objects = 50;
  *
  * DO NOT EXPECT      * hangs, crashes
  */
-class StRadosDeletePool : public SysTestRunnable
-{
-public:
-  StRadosDeletePool(int argc, const char **argv,
-		  CrossProcessSem *pool_setup_sem, CrossProcessSem *delete_pool_sem,
-		  const std::string &pool_name)
-    : SysTestRunnable(argc, argv),
-      m_pool_setup_sem(pool_setup_sem), m_delete_pool_sem(delete_pool_sem),
-      m_pool_name(pool_name)
-  {
-  }
-
-  ~StRadosDeletePool()
-  {
-  }
-
-  int run()
-  {
-    rados_t cl;
-    RETURN1_IF_NONZERO(rados_create(&cl, NULL));
-    rados_conf_parse_argv(cl, m_argc, m_argv);
-    RETURN1_IF_NONZERO(rados_conf_read_file(cl, NULL));
-    RETURN1_IF_NONZERO(rados_connect(cl));
-    m_pool_setup_sem->wait();
-    m_pool_setup_sem->post();
-
-    rados_ioctx_t io_ctx;
-    RETURN1_IF_NOT_VAL(-EEXIST, rados_pool_create(cl, m_pool_name.c_str()));
-    RETURN1_IF_NONZERO(rados_ioctx_create(cl, m_pool_name.c_str(), &io_ctx));
-    rados_ioctx_destroy(io_ctx);
-    rados_pool_delete(cl, m_pool_name.c_str());
-    if (m_delete_pool_sem)
-      m_delete_pool_sem->post();
-    rados_shutdown(cl);
-    return 0;
-  }
-
-private:
-  CrossProcessSem *m_pool_setup_sem;
-  CrossProcessSem *m_delete_pool_sem;
-  std::string m_pool_name;
-};
 
 const char *get_id_str()
 {
@@ -98,6 +57,7 @@ const char *get_id_str()
 int main(int argc, const char **argv)
 {
   const char *num_objects = getenv("NUM_OBJECTS");
+  std::string pool = "foo";
   if (num_objects) {
     g_num_objects = atoi(num_objects); 
     if (g_num_objects == 0)
@@ -111,8 +71,9 @@ int main(int argc, const char **argv)
 
   // first test: create a pool, then delete that pool
   {
-    StRadosCreatePool r1(argc, argv, pool_setup_sem, NULL, 50, ".obj");
-    StRadosDeletePool r2(argc, argv, pool_setup_sem, NULL, "foo");
+    StRadosCreatePool r1(argc, argv, NULL, pool_setup_sem, NULL,
+			 pool, 50, ".obj");
+    StRadosDeletePool r2(argc, argv, pool_setup_sem, NULL, pool);
     vector < SysTestRunnable* > vec;
     vec.push_back(&r1);
     vec.push_back(&r2);
@@ -128,10 +89,10 @@ int main(int argc, const char **argv)
   RETURN1_IF_NONZERO(pool_setup_sem->reinit(0));
   RETURN1_IF_NONZERO(delete_pool_sem->reinit(0));
   {
-    StRadosCreatePool r1(argc, argv, pool_setup_sem, NULL, g_num_objects, ".obj");
-    StRadosDeletePool r2(argc, argv,
-			 pool_setup_sem, delete_pool_sem, "foo");
-    StRadosListObjects r3(argc, argv, true, g_num_objects / 2,
+    StRadosCreatePool r1(argc, argv, NULL, pool_setup_sem, NULL,
+			 pool, g_num_objects, ".obj");
+    StRadosDeletePool r2(argc, argv, pool_setup_sem, delete_pool_sem, pool);
+    StRadosListObjects r3(argc, argv, pool, true, g_num_objects / 2,
 			  pool_setup_sem, delete_pool_sem);
     vector < SysTestRunnable* > vec;
     vec.push_back(&r1);

@@ -116,6 +116,8 @@ struct ceph_dir_layout {
 #define CEPH_MSG_MON_SUBSCRIBE_ACK      16
 #define CEPH_MSG_AUTH			17
 #define CEPH_MSG_AUTH_REPLY		18
+#define CEPH_MSG_MON_GET_VERSION        19
+#define CEPH_MSG_MON_GET_VERSION_REPLY  20
 
 /* client <-> mds */
 #define CEPH_MSG_MDS_MAP                21
@@ -393,6 +395,7 @@ union ceph_mds_request_args {
 		__le32 object_size;
 		__le32 file_replication;
 		__le32 preferred;
+		__le64 old_size;             /* if O_TRUNC */
 	} __attribute__ ((packed)) open;
 	struct {
 		__le32 flags;

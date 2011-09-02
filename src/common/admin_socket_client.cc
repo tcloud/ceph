@@ -109,7 +109,7 @@ static std::string asok_connect(const std::string &path, int *fd)
 
 static std::string asok_request(int socket_fd, uint32_t request_id)
 {
-  uint32_t request_id_raw = htonl(0x1);
+  uint32_t request_id_raw = htonl(request_id);
   ssize_t res = safe_write(socket_fd, &request_id_raw, sizeof(request_id_raw));
   if (res < 0) {
     int err = res;
@@ -128,9 +128,10 @@ AdminSocketClient(const std::string &path)
 }
 
 std::string AdminSocketClient::
-send_noop()
+get_version(uint32_t *version)
 {
-  int socket_fd;
+  uint32_t version_raw;
+  int socket_fd, res;
   std::string err = asok_connect(m_path, &socket_fd);
   if (!err.empty()) {
     goto done;
@@ -139,13 +140,36 @@ send_noop()
   if (!err.empty()) {
     goto done;
   }
+  res = safe_read_exact(socket_fd, &version_raw,
+				sizeof(version_raw));
+  if (res < 0) {
+    int e = res;
+    ostringstream oss;
+    oss << "safe_read(" << socket_fd << ") failed to read version_raw: "
+	<< cpp_strerror(e);
+    err = oss.str();
+    goto done;
+  }
+  *version = ntohl(version_raw);
 done:
   close(socket_fd);
   return err;
 }
 
 std::string AdminSocketClient::
+get_schema(std::string *message)
+{
+  return get_json(message, 0x2);
+}
+
+std::string AdminSocketClient::
 get_message(std::string *message)
+{
+  return get_json(message, 0x1);
+}
+
+std::string AdminSocketClient::
+get_json(std::string *message, uint32_t request_code)
 {
   int socket_fd, res;
   std::vector<uint8_t> vec(65536, 0);
@@ -156,7 +180,7 @@ get_message(std::string *message)
   if (!err.empty()) {
     goto done;
   }
-  err = asok_request(socket_fd, 0x1);
+  err = asok_request(socket_fd, request_code);
   if (!err.empty()) {
     goto done;
   }

@@ -53,6 +53,7 @@ CephContext *common_preinit(const CephInitParameters &iparams,
       if (!(flags & CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS)) {
 	conf->set_val_or_die("pid_file", "/var/run/ceph/$type.$id.pid");
 	conf->set_val_or_die("admin_socket", "/var/run/ceph/$name.asok");
+	conf->set_val_or_die("log_file", "/var/log/ceph/$name.log");
       }
       conf->set_val_or_die("log_to_stderr", STRINGIFY(LOG_TO_STDERR_SOME));
       break;
@@ -94,7 +95,7 @@ void common_init_finish(CephContext *cct)
   // Trigger callbacks on any config observers that were waiting for
   // it to become safe to start threads.
   cct->_conf->set_val("internal_safe_to_start_threads", "true");
-  cct->_conf->apply_changes();
+  cct->_conf->apply_changes(NULL);
 }
 
 void common_destroy_context(CephContext *cct)

@@ -12,6 +12,8 @@
  *
  */
 
+#include <time.h>
+
 #include "common/admin_socket.h"
 #include "common/DoutStreambuf.h"
 #include "common/perf_counters.h"
@@ -19,10 +21,13 @@
 #include "common/ceph_context.h"
 #include "common/config.h"
 #include "common/debug.h"
+#include "common/HeartbeatMap.h"
 
 #include <iostream>
 #include <pthread.h>
 #include <semaphore.h>
+
+using ceph::HeartbeatMap;
 
 class CephContextServiceThread : public Thread
 {
@@ -41,7 +46,14 @@ public:
   void *entry()
   {
     while (1) {
-      sem_wait(&_sem);
+      if (_cct->_conf->heartbeat_interval) {
+	struct timespec timeout;
+	clock_gettime(CLOCK_REALTIME, &timeout);
+	timeout.tv_sec += _cct->_conf->heartbeat_interval;
+	sem_timedwait(&_sem, &timeout);
+      } else {
+	sem_wait(&_sem);
+      }
       if (_exit_thread) {
 	break;
       }
@@ -49,6 +61,7 @@ public:
 	_cct->_doss->reopen_logs(_cct->_conf);
 	_reopen_logs = false;
       }
+      _cct->_heartbeat_map->check_touch_file();
     }
     return NULL;
   }
@@ -80,19 +93,23 @@ CephContext(uint32_t module_type_)
     _module_type(module_type_),
     _service_thread(NULL),
     _admin_socket_config_obs(NULL),
-    _perf_counters_collection(NULL)
+    _perf_counters_collection(NULL),
+    _heartbeat_map(NULL)
 {
   pthread_spin_init(&_service_thread_lock, PTHREAD_PROCESS_SHARED);
   _perf_counters_collection = new PerfCountersCollection(this);
   _conf->add_observer(_doss);
   _admin_socket_config_obs = new AdminSocketConfigObs(this);
   _conf->add_observer(_admin_socket_config_obs);
+  _heartbeat_map = new HeartbeatMap(this);
 }
 
 CephContext::
 ~CephContext()
 {
   join_service_thread();
+
+  delete _heartbeat_map;
 
   _conf->remove_observer(_admin_socket_config_obs);
   _conf->remove_observer(_doss);

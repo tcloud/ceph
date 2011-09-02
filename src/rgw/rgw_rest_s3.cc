@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "common/ceph_crypto.h"
+#include "common/Formatter.h"
 
 #include "rgw_rest.h"
 #include "rgw_rest_s3.h"
@@ -14,20 +15,21 @@ using namespace ceph::crypto;
 
 void list_all_buckets_start(struct req_state *s)
 {
-  s->formatter->open_array_section("ListAllMyBucketsResult xmlns=\"http://doc.s3.amazonaws.com/2006-03-01\"");
+  s->formatter->open_array_section_in_ns("ListAllMyBucketsResult",
+			      "http://doc.s3.amazonaws.com/2006-03-01");
 }
 
 void list_all_buckets_end(struct req_state *s)
 {
-  s->formatter->close_section("ListAllMyBucketsResult");
+  s->formatter->close_section();
 }
 
 void dump_bucket(struct req_state *s, RGWBucketEnt& obj)
 {
-  s->formatter->open_obj_section("Bucket");
-  s->formatter->dump_value_str("Name", obj.name.c_str());
+  s->formatter->open_object_section("Bucket");
+  s->formatter->dump_format("Name", obj.name.c_str());
   dump_time(s, "CreationDate", &obj.mtime);
-  s->formatter->close_section("Bucket");
+  s->formatter->close_section();
 }
 
 int RGWGetObj_REST_S3::send_response(void *handle)
@@ -71,8 +73,7 @@ int RGWGetObj_REST_S3::send_response(void *handle)
   if (range_str && !ret)
     ret = 206; /* partial content */
 done:
-  if (orig_ret)
-    set_req_state_err(s, ret);
+  set_req_state_err(s, ret);
 
   dump_errno(s);
   if (!content_type)
@@ -106,11 +107,11 @@ void RGWListBuckets_REST_S3::send_response()
     RGWBucketEnt obj = iter->second;
     dump_bucket(s, obj);
   }
-  s->formatter->close_section("Buckets");
+  s->formatter->close_section();
   list_all_buckets_end(s);
   dump_content_length(s, s->formatter->get_len());
   end_header(s, "application/xml");
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void RGWListBucket_REST_S3::send_response()
@@ -124,43 +125,40 @@ void RGWListBucket_REST_S3::send_response()
   if (ret < 0)
     return;
 
-  s->formatter->open_obj_section("ListBucketResult");
-  s->formatter->dump_value_str("Name", s->bucket);
+  s->formatter->open_object_section("ListBucketResult");
+  s->formatter->dump_format("Name", s->bucket);
   if (!prefix.empty())
-    s->formatter->dump_value_str("Prefix", prefix.c_str());
-  if (!marker.empty())
-    s->formatter->dump_value_str("Marker", marker.c_str());
-  if (!max_keys.empty()) {
-    s->formatter->dump_value_str("MaxKeys", max_keys.c_str());
-  }
+    s->formatter->dump_format("Prefix", prefix.c_str());
+  s->formatter->dump_format("Marker", marker.c_str());
+  s->formatter->dump_int("MaxKeys", max);
   if (!delimiter.empty())
-    s->formatter->dump_value_str("Delimiter", delimiter.c_str());
+    s->formatter->dump_format("Delimiter", delimiter.c_str());
 
-  s->formatter->dump_value_str("IsTruncated", (is_truncated ? "true" : "false"));
+  s->formatter->dump_format("IsTruncated", (max && is_truncated ? "true" : "false"));
 
   if (ret >= 0) {
     vector<RGWObjEnt>::iterator iter;
     for (iter = objs.begin(); iter != objs.end(); ++iter) {
       s->formatter->open_array_section("Contents");
-      s->formatter->dump_value_str("Key", iter->name.c_str());
+      s->formatter->dump_format("Key", iter->name.c_str());
       dump_time(s, "LastModified", &iter->mtime);
-      s->formatter->dump_value_str("ETag", "\"%s\"", iter->etag);
-      s->formatter->dump_value_int("Size", "%lld", iter->size);
-      s->formatter->dump_value_str("StorageClass", "STANDARD");
+      s->formatter->dump_format("ETag", "\"%s\"", iter->etag);
+      s->formatter->dump_int("Size", iter->size);
+      s->formatter->dump_format("StorageClass", "STANDARD");
       dump_owner(s, iter->owner, iter->owner_display_name);
-      s->formatter->close_section("Contents");
+      s->formatter->close_section();
     }
     if (common_prefixes.size() > 0) {
-      s->formatter->open_array_section("CommonPrefixes");
       map<string, bool>::iterator pref_iter;
       for (pref_iter = common_prefixes.begin(); pref_iter != common_prefixes.end(); ++pref_iter) {
-        s->formatter->dump_value_str("Prefix", pref_iter->first.c_str());
+        s->formatter->open_array_section("CommonPrefixes");
+        s->formatter->dump_format("Prefix", pref_iter->first.c_str());
+        s->formatter->close_section();
       }
-      s->formatter->close_section("CommonPrefixes");
     }
   }
-  s->formatter->close_section("ListBucketResult");
-  s->formatter->flush(s);
+  s->formatter->close_section();
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void RGWCreateBucket_REST_S3::send_response()
@@ -184,11 +182,12 @@ void RGWDeleteBucket_REST_S3::send_response()
 
 void RGWPutObj_REST_S3::send_response()
 {
-  dump_etag(s, etag.c_str());
-  if (ret)
+  if (ret) {
     set_req_state_err(s, ret);
-  else
+  } else {
+    dump_etag(s, etag.c_str());
     dump_content_length(s, 0);
+  }
   dump_errno(s);
   end_header(s);
 }
@@ -212,18 +211,18 @@ void RGWCopyObj_REST_S3::send_response()
 
   end_header(s, "binary/octet-stream");
   if (ret == 0) {
-    s->formatter->open_obj_section("CopyObjectResult");
+    s->formatter->open_object_section("CopyObjectResult");
     dump_time(s, "LastModified", &mtime);
     map<string, bufferlist>::iterator iter = attrs.find(RGW_ATTR_ETAG);
     if (iter != attrs.end()) {
       bufferlist& bl = iter->second;
       if (bl.length()) {
         char *etag = bl.c_str();
-        s->formatter->dump_value_str("ETag", etag);
+        s->formatter->dump_format("ETag", etag);
       }
     }
-    s->formatter->close_section("CopyObjectResult");
-    s->formatter->flush(s);
+    s->formatter->close_section();
+    flush_formatter_to_req_state(s, s->formatter);
   }
 }
 
@@ -254,12 +253,13 @@ void RGWInitMultipart_REST_S3::send_response()
   end_header(s, "application/xml");
   if (ret == 0) { 
     dump_start(s);
-    s->formatter->open_obj_section("InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"");
-    s->formatter->dump_value_str("Bucket", s->bucket);
-    s->formatter->dump_value_str("Key", s->object);
-    s->formatter->dump_value_str("UploadId", upload_id.c_str());
-    s->formatter->close_section("InitiateMultipartUploadResult");
-    s->formatter->flush(s);
+    s->formatter->open_object_section_in_ns("InitiateMultipartUploadResult",
+		  "http://s3.amazonaws.com/doc/2006-03-01/");
+    s->formatter->dump_format("Bucket", s->bucket);
+    s->formatter->dump_format("Key", s->object);
+    s->formatter->dump_format("UploadId", upload_id.c_str());
+    s->formatter->close_section();
+    flush_formatter_to_req_state(s, s->formatter);
   }
 }
 
@@ -271,15 +271,16 @@ void RGWCompleteMultipart_REST_S3::send_response()
   end_header(s, "application/xml");
   if (ret == 0) { 
     dump_start(s);
-    s->formatter->open_obj_section("CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"");
+    s->formatter->open_object_section_in_ns("CompleteMultipartUploadResult",
+			  "http://s3.amazonaws.com/doc/2006-03-01/");
     const char *gateway_dns_name = s->env->get("RGW_DNS_NAME");
     if (gateway_dns_name)
-      s->formatter->dump_value_str("Location", "%s.%s", s->bucket, gateway_dns_name);
-    s->formatter->dump_value_str("Bucket", s->bucket);
-    s->formatter->dump_value_str("Key", s->object);
-    s->formatter->dump_value_str("ETag", etag.c_str());
-    s->formatter->close_section("CompleteMultipartUploadResult");
-    s->formatter->flush(s);
+      s->formatter->dump_format("Location", "%s.%s", s->bucket, gateway_dns_name);
+    s->formatter->dump_format("Bucket", s->bucket);
+    s->formatter->dump_format("Key", s->object);
+    s->formatter->dump_format("ETag", etag.c_str());
+    s->formatter->close_section();
+    flush_formatter_to_req_state(s, s->formatter);
   }
 }
 
@@ -303,7 +304,8 @@ void RGWListMultipart_REST_S3::send_response()
 
   if (ret == 0) { 
     dump_start(s);
-    s->formatter->open_obj_section("ListMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"");
+    s->formatter->open_object_section_in_ns("ListMultipartUploadResult",
+		    "http://s3.amazonaws.com/doc/2006-03-01/");
     map<uint32_t, RGWUploadPartInfo>::iterator iter, test_iter;
     int i, cur_max = 0;
 
@@ -311,14 +313,14 @@ void RGWListMultipart_REST_S3::send_response()
     for (i = 0, test_iter = iter; test_iter != parts.end() && i < max_parts; ++test_iter, ++i) {
       cur_max = test_iter->first;
     }
-    s->formatter->dump_value_str("Bucket", s->bucket);
-    s->formatter->dump_value_str("Key", s->object);
-    s->formatter->dump_value_str("UploadId", upload_id.c_str());
-    s->formatter->dump_value_str("StorageClass", "STANDARD");
-    s->formatter->dump_value_str("PartNumberMarker", "%d", marker);
-    s->formatter->dump_value_str("NextPartNumberMarker", "%d", cur_max + 1);
-    s->formatter->dump_value_str("MaxParts", "%d", max_parts);
-    s->formatter->dump_value_str("IsTruncated", "%s", (test_iter == parts.end() ? "false" : "true"));
+    s->formatter->dump_format("Bucket", s->bucket);
+    s->formatter->dump_format("Key", s->object);
+    s->formatter->dump_format("UploadId", upload_id.c_str());
+    s->formatter->dump_format("StorageClass", "STANDARD");
+    s->formatter->dump_format("PartNumberMarker", "%d", marker);
+    s->formatter->dump_format("NextPartNumberMarker", "%d", cur_max + 1);
+    s->formatter->dump_format("MaxParts", "%d", max_parts);
+    s->formatter->dump_format("IsTruncated", "%s", (test_iter == parts.end() ? "false" : "true"));
 
     ACLOwner& owner = policy.get_owner();
     dump_owner(s, owner.get_id(), owner.get_display_name());
@@ -328,20 +330,20 @@ void RGWListMultipart_REST_S3::send_response()
 
       time_t sec = info.modified.sec();
       struct tm tmp;
-      localtime_r(&sec, &tmp);
+      gmtime_r(&sec, &tmp);
       char buf[TIME_BUF_SIZE];
       if (strftime(buf, sizeof(buf), "%Y-%m-%dT%T.000Z", &tmp) > 0) {
-        s->formatter->dump_value_str("LastModified", buf);
+        s->formatter->dump_format("LastModified", buf);
       }
 
-      s->formatter->open_obj_section("Part");
-      s->formatter->dump_value_int("PartNumber", "%u", info.num);
-      s->formatter->dump_value_str("ETag", "%s", info.etag.c_str());
-      s->formatter->dump_value_int("Size", "%llu", info.size);
-      s->formatter->close_section("Part");
+      s->formatter->open_object_section("Part");
+      s->formatter->dump_unsigned("PartNumber", info.num);
+      s->formatter->dump_format("ETag", "%s", info.etag.c_str());
+      s->formatter->dump_unsigned("Size", info.size);
+      s->formatter->close_section();
     }
-    s->formatter->close_section("ListMultipartUploadResult");
-    s->formatter->flush(s);
+    s->formatter->close_section();
+    flush_formatter_to_req_state(s, s->formatter);
   }
 }
 
@@ -356,51 +358,51 @@ void RGWListBucketMultiparts_REST_S3::send_response()
   if (ret < 0)
     return;
 
-  s->formatter->open_obj_section("ListMultipartUploadsResult");
-  s->formatter->dump_value_str("Bucket", s->bucket);
+  s->formatter->open_object_section("ListMultipartUploadsResult");
+  s->formatter->dump_format("Bucket", s->bucket);
   if (!prefix.empty())
-    s->formatter->dump_value_str("ListMultipartUploadsResult.Prefix", prefix.c_str());
+    s->formatter->dump_format("ListMultipartUploadsResult.Prefix", prefix.c_str());
   string& key_marker = marker.get_key();
   if (!key_marker.empty())
-    s->formatter->dump_value_str("KeyMarker", key_marker.c_str());
+    s->formatter->dump_format("KeyMarker", key_marker.c_str());
   string& upload_id_marker = marker.get_upload_id();
   if (!upload_id_marker.empty())
-    s->formatter->dump_value_str("UploadIdMarker", upload_id_marker.c_str());
+    s->formatter->dump_format("UploadIdMarker", upload_id_marker.c_str());
   string next_key = next_marker.mp.get_key();
   if (!next_key.empty())
-    s->formatter->dump_value_str("NextKeyMarker", next_key.c_str());
+    s->formatter->dump_format("NextKeyMarker", next_key.c_str());
   string next_upload_id = next_marker.mp.get_upload_id();
   if (!next_upload_id.empty())
-    s->formatter->dump_value_str("NextUploadIdMarker", next_upload_id.c_str());
-  s->formatter->dump_value_str("MaxUploads", "%d", max_uploads);
+    s->formatter->dump_format("NextUploadIdMarker", next_upload_id.c_str());
+  s->formatter->dump_format("MaxUploads", "%d", max_uploads);
   if (!delimiter.empty())
-    s->formatter->dump_value_str("Delimiter", delimiter.c_str());
-  s->formatter->dump_value_str("IsTruncated", (is_truncated ? "true" : "false"));
+    s->formatter->dump_format("Delimiter", delimiter.c_str());
+  s->formatter->dump_format("IsTruncated", (is_truncated ? "true" : "false"));
 
   if (ret >= 0) {
     vector<RGWMultipartUploadEntry>::iterator iter;
     for (iter = uploads.begin(); iter != uploads.end(); ++iter) {
       RGWMPObj& mp = iter->mp;
       s->formatter->open_array_section("Upload");
-      s->formatter->dump_value_str("Key", mp.get_key().c_str());
-      s->formatter->dump_value_str("UploadId", mp.get_upload_id().c_str());
+      s->formatter->dump_format("Key", mp.get_key().c_str());
+      s->formatter->dump_format("UploadId", mp.get_upload_id().c_str());
       dump_owner(s, s->user.user_id, s->user.display_name, "Initiator");
       dump_owner(s, s->user.user_id, s->user.display_name);
-      s->formatter->dump_value_str("StorageClass", "STANDARD");
+      s->formatter->dump_format("StorageClass", "STANDARD");
       dump_time(s, "Initiated", &iter->obj.mtime);
-      s->formatter->close_section("Upload");
+      s->formatter->close_section();
     }
     if (common_prefixes.size() > 0) {
       s->formatter->open_array_section("CommonPrefixes");
       map<string, bool>::iterator pref_iter;
       for (pref_iter = common_prefixes.begin(); pref_iter != common_prefixes.end(); ++pref_iter) {
-        s->formatter->dump_value_str("CommonPrefixes.Prefix", pref_iter->first.c_str());
+        s->formatter->dump_format("CommonPrefixes.Prefix", pref_iter->first.c_str());
       }
-      s->formatter->close_section("CommonPrefixes");
+      s->formatter->close_section();
     }
   }
-  s->formatter->close_section("ListMultipartUploadsResult");
-  s->formatter->flush(s);
+  s->formatter->close_section();
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 RGWOp *RGWHandler_REST_S3::get_retrieve_obj_op(bool get_data)
@@ -523,11 +525,48 @@ static void get_canon_resource(struct req_state *s, string& dest)
   RGW_LOG(10) << "get_canon_resource(): dest=" << dest << dendl;
 }
 
+static bool check_str_end(const char *s)
+{
+  if (!s)
+    return false;
+
+  while (*s) {
+    if (!isspace(*s))
+      return false;
+    s++;
+  }
+  return true;
+}
+
+static bool parse_rfc850(const char *s, struct tm *t)
+{
+  return check_str_end(strptime(s, "%A, %d-%b-%y %H:%M:%S GMT", t));
+}
+
+static bool parse_asctime(const char *s, struct tm *t)
+{
+  return check_str_end(strptime(s, "%a %b %d %H:%M:%S %Y", t));
+}
+
+static bool parse_rfc1123(const char *s, struct tm *t)
+{
+  return check_str_end(strptime(s, "%a, %d %b %Y %H:%M:%S GMT", t));
+}
+
+static bool parse_rfc2616(const char *s, struct tm *t)
+{
+  return parse_rfc850(s, t) || parse_asctime(s, t) || parse_rfc1123(s, t);
+}
+
+static inline bool is_base64_for_content_md5(unsigned char c) {
+  return (isalnum(c) || isspace(c) || (c == '+') || (c == '/') || (c == '='));
+}
+
 /*
  * get the header authentication  information required to
  * compute a request's signature
  */
-static void get_auth_header(struct req_state *s, string& dest, bool qsr)
+static bool get_auth_header(struct req_state *s, string& dest, bool qsr)
 {
   dest = "";
   if (s->method)
@@ -535,8 +574,15 @@ static void get_auth_header(struct req_state *s, string& dest, bool qsr)
   dest.append("\n");
   
   const char *md5 = s->env->get("HTTP_CONTENT_MD5");
-  if (md5)
+  if (md5) {
+    for (const char *p = md5; *p; p++) {
+      if (!is_base64_for_content_md5(*p)) {
+        RGW_LOG(0) << "bad content-md5 provided (not base64), aborting request p=" << *p << " " << (int)*p << dendl;
+        return false;
+      }
+    }
     dest.append(md5);
+  }
   dest.append("\n");
 
   const char *type = s->env->get("CONTENT_TYPE");
@@ -549,8 +595,27 @@ static void get_auth_header(struct req_state *s, string& dest, bool qsr)
     date = s->args.get("Expires");
   } else {
     const char *str = s->env->get("HTTP_DATE");
-    if (str)
+    const char *req_date = str;
+    if (str) {
       date = str;
+    } else {
+      req_date = s->env->get("HTTP_X_AMZ_DATE");
+      if (!req_date) {
+        RGW_LOG(0) << "missing date for auth header" << dendl;
+        return false;
+      }
+    }
+
+    struct tm t;
+    if (!parse_rfc2616(req_date, &t)) {
+      RGW_LOG(0) << "failed to parse date for auth header" << dendl;
+      return false;
+    }
+    if (t.tm_year < 70) {
+      RGW_LOG(0) << "bad date (predates epoch): " << req_date << dendl;
+      return false;
+    }
+    s->header_time = utime_t(timegm(&t), 0);
   }
 
   if (date.size())
@@ -564,17 +629,22 @@ static void get_auth_header(struct req_state *s, string& dest, bool qsr)
   string canon_resource;
   get_canon_resource(s, canon_resource);
   dest.append(canon_resource);
+
+  return true;
 }
 
 /*
  * verify that a signed request comes from the keyholder
  * by checking the signature against our locally-computed version
  */
-bool RGWHandler_REST_S3::authorize()
+int RGWHandler_REST_S3::authorize()
 {
   bool qsr = false;
   string auth_id;
   string auth_sign;
+
+  time_t now;
+  time(&now);
 
   if (!s->http_auth || !(*s->http_auth)) {
     auth_id = s->args.get("AWSAccessKeyId");
@@ -583,25 +653,23 @@ bool RGWHandler_REST_S3::authorize()
 
       string date = s->args.get("Expires");
       time_t exp = atoll(date.c_str());
-      time_t now;
-      time(&now);
       if (now >= exp)
-        return false;
+        return -EPERM;
 
       qsr = true;
     } else {
       /* anonymous access */
       rgw_get_anon_user(s->user);
       s->perm_mask = RGW_PERM_FULL_CONTROL;
-      return true;
+      return 0;
     }
   } else {
     if (strncmp(s->http_auth, "AWS ", 4))
-      return false;
+      return -EINVAL;
     string auth_str(s->http_auth + 4);
     int pos = auth_str.find(':');
     if (pos < 0)
-      return false;
+      return -EINVAL;
 
     auth_id = auth_str.substr(0, pos);
     auth_sign = auth_str.substr(pos + 1);
@@ -610,19 +678,30 @@ bool RGWHandler_REST_S3::authorize()
   /* first get the user info */
   if (rgw_get_user_info_by_access_key(auth_id, s->user) < 0) {
     RGW_LOG(5) << "error reading user info, uid=" << auth_id << " can't authenticate" << dendl;
-    return false;
+    return -EPERM;
   }
 
   /* now verify signature */
    
   string auth_hdr;
-  get_auth_header(s, auth_hdr, qsr);
+  if (!get_auth_header(s, auth_hdr, qsr)) {
+    RGW_LOG(10) << "failed to create auth header\n" << auth_hdr << dendl;
+    return -EPERM;
+  }
   RGW_LOG(10) << "auth_hdr:\n" << auth_hdr << dendl;
+
+  time_t req_sec = s->header_time.sec();
+  if (req_sec < now - RGW_AUTH_GRACE_MINS * 60 ||
+      req_sec > now + RGW_AUTH_GRACE_MINS * 60) {
+    RGW_LOG(10) << "req_sec=" << req_sec << " now=" << now << "; now - RGW_AUTH_GRACE_MINS=" << now - RGW_AUTH_GRACE_MINS * 60 << "; now + RGW_AUTH_GRACE_MINS=" << now + RGW_AUTH_GRACE_MINS * 60 << dendl;
+    RGW_LOG(0) << "request time skew too big now=" << utime_t(now, 0) << " req_time=" << s->header_time << dendl;
+    return -ERR_REQUEST_TIME_SKEWED;
+  }
 
   map<string, RGWAccessKey>::iterator iter = s->user.access_keys.find(auth_id);
   if (iter == s->user.access_keys.end()) {
     RGW_LOG(0) << "ERROR: access key not encoded in user info" << dendl;
-    return false;
+    return -EPERM;
   }
   RGWAccessKey& k = iter->second;
   const char *key = k.key.c_str();
@@ -632,7 +711,7 @@ bool RGWHandler_REST_S3::authorize()
     map<string, RGWSubUser>::iterator uiter = s->user.subusers.find(k.subuser);
     if (uiter == s->user.subusers.end()) {
       RGW_LOG(0) << "ERROR: could not find subuser: " << k.subuser << dendl;
-      return false;
+      return -EPERM;
     }
     RGWSubUser& subuser = uiter->second;
     s->perm_mask = subuser.perm_mask;
@@ -647,14 +726,17 @@ bool RGWHandler_REST_S3::authorize()
 		       hmac_sha1 + CEPH_CRYPTO_HMACSHA1_DIGESTSIZE);
   if (ret < 0) {
     RGW_LOG(10) << "ceph_armor failed" << dendl;
-    return false;
+    return -EPERM;
   }
   b64[ret] = '\0';
 
   RGW_LOG(15) << "b64=" << b64 << dendl;
   RGW_LOG(15) << "auth_sign=" << auth_sign << dendl;
   RGW_LOG(15) << "compare=" << auth_sign.compare(b64) << dendl;
-  return (auth_sign.compare(b64) == 0);
+  if (auth_sign.compare(b64) != 0)
+    return -EPERM;
+
+  return  0;
 }
 
 

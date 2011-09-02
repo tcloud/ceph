@@ -1,8 +1,10 @@
 #include <errno.h>
 
+#include "common/Formatter.h"
 #include "common/utf8.h"
 #include "rgw_common.h"
 #include "rgw_access.h"
+#include "rgw_formats.h"
 #include "rgw_op.h"
 #include "rgw_rest.h"
 #include "rgw_rest_os.h"
@@ -29,16 +31,19 @@ const static struct rgw_html_errors RGW_HTML_ERRORS[] = {
     { 204, 204, "NoContent" },
     { 206, 206, "" },
     { EINVAL, 400, "InvalidArgument" },
-    { ERR_INVALID_DIGEST, 500, "InvalidDigest" },
-    { ERR_BAD_DIGEST, 500, "BadDigest" },
+    { ERR_INVALID_DIGEST, 400, "InvalidDigest" },
+    { ERR_BAD_DIGEST, 400, "BadDigest" },
     { ERR_INVALID_BUCKET_NAME, 400, "InvalidBucketName" },
     { ERR_INVALID_OBJECT_NAME, 400, "InvalidObjectName" },
     { ERR_UNRESOLVABLE_EMAIL, 400, "UnresolvableGrantByEmailAddress" },
     { ERR_INVALID_PART, 400, "InvalidPart" },
     { ERR_INVALID_PART_ORDER, 400, "InvalidPartOrder" },
+    { ERR_REQUEST_TIMEOUT, 400, "RequestTimeout" },
+    { ERR_LENGTH_REQUIRED, 411, "MissingContentLength" },
     { EACCES, 403, "AccessDenied" },
     { EPERM, 403, "AccessDenied" },
     { ERR_USER_SUSPENDED, 403, "UserSuspended" },
+    { ERR_REQUEST_TIME_SKEWED, 403, "RequestTimeTooSkewed" },
     { ENOENT, 404, "NoSuchKey" },
     { ERR_NO_SUCH_BUCKET, 404, "NoSuchBucket" },
     { ERR_NO_SUCH_UPLOAD, 404, "NoSuchUpload" },
@@ -110,40 +115,35 @@ void dump_last_modified(struct req_state *s, time_t t)
   CGI_PRINTF(s, "Last-Modified: %s\n", timestr);
 }
 
-static void dump_entry(struct req_state *s, const char *val)
-{
-  s->formatter->write_data("<?%s?>", val);
-}
-
-
 void dump_time(struct req_state *s, const char *name, time_t *t)
 {
   char buf[TIME_BUF_SIZE];
-  struct tm *tmp = localtime(t);
+  struct tm result;
+  struct tm *tmp = gmtime_r(t, &result);
   if (tmp == NULL)
     return;
 
   if (strftime(buf, sizeof(buf), "%Y-%m-%dT%T.000Z", tmp) == 0)
     return;
 
-  s->formatter->dump_value_str(name, buf); 
+  s->formatter->dump_format(name, buf); 
 }
 
 void dump_owner(struct req_state *s, string& id, string& name, const char *section)
 {
   if (!section)
     section = "Owner";
-  s->formatter->open_obj_section(section);
-  s->formatter->dump_value_str("ID", id.c_str());
-  s->formatter->dump_value_str("DisplayName", name.c_str());
-  s->formatter->close_section(section);
+  s->formatter->open_object_section(section);
+  s->formatter->dump_format("ID", id.c_str());
+  s->formatter->dump_format("DisplayName", name.c_str());
+  s->formatter->close_section();
 }
 
 void dump_start(struct req_state *s)
 {
   if (!s->content_started) {
     if (s->format == RGW_FORMAT_XML)
-      dump_entry(s, "xml version=\"1.0\" encoding=\"UTF-8\"");
+      s->formatter->write_raw_data(XMLFormatter::XML_1_DTD);
     s->content_started = true;
   }
 }
@@ -165,16 +165,16 @@ void end_header(struct req_state *s, const char *content_type)
   }
   if (s->err.is_err()) {
     dump_start(s);
-    s->formatter->open_obj_section("Error");
+    s->formatter->open_object_section("Error");
     if (!s->err.s3_code.empty())
-      s->formatter->dump_value_int("Code", "%s", s->err.s3_code.c_str());
+      s->formatter->dump_format("Code", "%s", s->err.s3_code.c_str());
     if (!s->err.message.empty())
-      s->formatter->dump_value_str("Message", s->err.message.c_str());
-    s->formatter->close_section("Error");
+      s->formatter->dump_format("Message", s->err.message.c_str());
+    s->formatter->close_section();
     dump_content_length(s, s->formatter->get_len());
   }
   CGI_PRINTF(s,"Content-type: %s\r\n\r\n", content_type);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
   s->header_ended = true;
 }
 
@@ -183,7 +183,7 @@ void abort_early(struct req_state *s, int err_no)
   set_req_state_err(s, err_no);
   dump_errno(s);
   end_header(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void dump_continue(struct req_state *s)
@@ -227,7 +227,7 @@ int RGWPutObj_REST::get_data()
     cl = RGW_MAX_CHUNK_SIZE;
   }
 
-  len = 0;
+  int len = 0;
   if (cl) {
     data = (char *)malloc(cl);
     if (!data)
@@ -239,7 +239,7 @@ int RGWPutObj_REST::get_data()
   if (!ofs)
     supplied_md5_b64 = s->env->get("HTTP_CONTENT_MD5");
 
-  return 0;
+  return len;
 }
 
 int RGWCopyObj_REST::get_params()
@@ -383,7 +383,7 @@ void init_entities_from_header(struct req_state *s)
 
   /* this is the default, might change in a few lines */
   s->format = RGW_FORMAT_XML;
-  s->formatter = new RGWFormatter_XML;
+  s->formatter = new XMLFormatter(false);
 
   int pos;
   if (s->host) {
@@ -395,7 +395,7 @@ void init_entities_from_header(struct req_state *s)
     if (pos > 0 && h[pos - 1] == '.') {
       string encoded_bucket = h.substr(0, pos-1);
       url_decode(encoded_bucket, s->bucket_str);
-      s->bucket = s->bucket_str.c_str();
+      s->bucket = strdup(s->bucket_str.c_str());
       s->host_bucket = s->bucket;
     } else {
       s->host_bucket = NULL;
@@ -443,14 +443,17 @@ void init_entities_from_header(struct req_state *s)
 
   if (s->prot_flags & RGW_REST_OPENSTACK) {
     s->format = 0;
+    delete s->formatter;
     s->formatter = new RGWFormatter_Plain;
     string format_str = s->args.get("format");
     if (format_str.compare("xml") == 0) {
       s->format = RGW_FORMAT_XML;
-      s->formatter = new RGWFormatter_XML;
+      delete s->formatter;
+      s->formatter = new XMLFormatter(false);
     } else if (format_str.compare("json") == 0) {
       s->format = RGW_FORMAT_JSON;
-      s->formatter = new RGWFormatter_JSON;
+      delete s->formatter;
+      s->formatter = new JSONFormatter(false);
     }
   }
 
@@ -470,11 +473,11 @@ void init_entities_from_header(struct req_state *s)
       goto done;
 
     url_decode(first, s->bucket_str);
-    s->bucket = s->bucket_str.c_str();
+    s->bucket = strdup(s->bucket_str.c_str());
    
     if (req.size()) {
       url_decode(req, s->object_str);
-      s->object = s->object_str.c_str();
+      s->object = strdup(s->object_str.c_str());
     }
 
     goto done;
@@ -482,10 +485,10 @@ void init_entities_from_header(struct req_state *s)
 
   if (!s->bucket) {
     url_decode(first, s->bucket_str);
-    s->bucket = s->bucket_str.c_str();
+    s->bucket = strdup(s->bucket_str.c_str());
   } else {
     url_decode(req, s->object_str);
-    s->object = s->object_str.c_str();
+    s->object = strdup(s->object_str.c_str());
     goto done;
   }
 
@@ -497,11 +500,11 @@ void init_entities_from_header(struct req_state *s)
     url_decode(encoded_obj_str, s->object_str);
 
     if (s->object_str.size() > 0) {
-      s->object = s->object_str.c_str();
+      s->object = strdup(s->object_str.c_str());
     }
   }
 done:
-  s->formatter->init();
+  s->formatter->reset();
 }
 
 static void line_unfold(const char *line, string& sdest)
@@ -667,6 +670,8 @@ static int validate_object_name(const char *object)
 
 int RGWHandler_REST::preprocess(struct req_state *s, FCGX_Request *fcgx)
 {
+  int ret = 0;
+
   s->fcgx = fcgx;
   s->path_name = s->env->get("SCRIPT_NAME");
   s->path_name_url = s->env->get("REQUEST_URI");
@@ -695,8 +700,24 @@ int RGWHandler_REST::preprocess(struct req_state *s, FCGX_Request *fcgx)
   else
     s->op = OP_UNKNOWN;
 
+  switch (s->op) {
+  case OP_PUT:
+    if (!s->length)
+      ret = -ERR_LENGTH_REQUIRED;
+    else if (*s->length == '\0')
+      ret = -EINVAL;
+    else
+      s->content_length = atoll(s->length);
+    break;
+  default:
+    break;
+  }
+
   init_entities_from_header(s);
-  int ret = validate_bucket_name(s->bucket_str.c_str());
+  if (ret)
+    return ret;
+
+  ret = validate_bucket_name(s->bucket_str.c_str());
   if (ret)
     return ret;
   ret = validate_object_name(s->object_str.c_str());

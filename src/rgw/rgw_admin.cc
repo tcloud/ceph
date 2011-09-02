@@ -8,6 +8,7 @@ using namespace std;
 
 #include "common/config.h"
 #include "common/ceph_argparse.h"
+#include "common/Formatter.h"
 #include "global/global_init.h"
 #include "common/errno.h"
 
@@ -23,8 +24,8 @@ using namespace std;
 #define SECRET_KEY_LEN 40
 #define PUBLIC_ID_LEN 20
 
-static RGWFormatter_XML formatter_xml;
-static RGWFormatter_JSON formatter_json;
+static XMLFormatter formatter_xml;
+static JSONFormatter formatter_json;
 
 void _usage() 
 {
@@ -49,6 +50,8 @@ void _usage()
   cerr << "  policy                     read bucket/object policy\n";
   cerr << "  log show                   dump a log from specific object or (bucket + date\n";
   cerr << "                             + pool-id)\n";
+  cerr << "  temp remove                remove temporary objects that were created up to\n";
+  cerr << "                             specified date (and optional time)\n";
   cerr << "options:\n";
   cerr << "   --uid=<id>                user id\n";
   cerr << "   --subuser=<name>          subuser name\n";
@@ -66,6 +69,7 @@ void _usage()
   cerr << "   --bucket=<bucket>\n";
   cerr << "   --object=<object>\n";
   cerr << "   --date=<yyyy-mm-dd>\n";
+  cerr << "   --time=<HH:MM:SS>\n";
   cerr << "   --pool-id=<pool-id>\n";
   cerr << "   --format=<format>         specify output format for certain operations: xml,\n";
   cerr << "                             json\n";
@@ -106,6 +110,7 @@ enum {
   OPT_POOL_INFO,
   OPT_POOL_CREATE,
   OPT_LOG_SHOW,
+  OPT_TEMP_REMOVE,
 };
 
 static uint32_t str_to_perm(const char *str)
@@ -174,7 +179,8 @@ static int get_cmd(const char *cmd, const char *prev_cmd, bool *need_more)
       strcmp(cmd, "buckets") == 0 ||
       strcmp(cmd, "bucket") == 0 ||
       strcmp(cmd, "pool") == 0 ||
-      strcmp(cmd, "log") == 0) {
+      strcmp(cmd, "log") == 0 ||
+      strcmp(cmd, "temp") == 0) {
     *need_more = true;
     return 0;
   }
@@ -221,6 +227,9 @@ static int get_cmd(const char *cmd, const char *prev_cmd, bool *need_more)
   } else if (strcmp(prev_cmd, "log") == 0) {
     if (strcmp(cmd, "show") == 0)
       return OPT_LOG_SHOW;
+  } else if (strcmp(prev_cmd, "temp") == 0) {
+    if (strcmp(cmd, "remove") == 0)
+      return OPT_TEMP_REMOVE;
   } else if (strcmp(prev_cmd, "pool") == 0) {
     if (strcmp(cmd, "info") == 0)
       return OPT_POOL_INFO;
@@ -299,14 +308,14 @@ static int create_bucket(string& bucket, string& user_id, string& display_name, 
   if (ret && ret != -EEXIST)   
     goto done;
 
-  ret = rgwstore->set_attr(obj, RGW_ATTR_ACL, aclbl);
+  ret = rgwstore->set_attr(NULL, obj, RGW_ATTR_ACL, aclbl);
   if (ret < 0) {
     cerr << "couldn't set acl on bucket" << std::endl;
   }
 
   ret = rgw_add_bucket(user_id, bucket);
 
-  RGW_LOG(0) << "ret=" << ret << dendl;
+  RGW_LOG(20) << "ret=" << ret << dendl;
 
   if (ret == -EEXIST)
     ret = 0;
@@ -352,6 +361,93 @@ static void remove_old_indexes(RGWUserInfo& old_info, RGWUserInfo new_info)
     cerr << "ERROR: this should be fixed manually!" << std::endl;
 }
 
+class IntentLogNameFilter : public RGWAccessListFilter
+{
+  string prefix;
+  bool filter_exact_date;
+public:
+  IntentLogNameFilter(const char *date, struct tm *tm) {
+    prefix = date;
+    filter_exact_date = !(tm->tm_hour || tm->tm_min || tm->tm_sec); /* if time was specified and is not 00:00:00
+                                                                       we should look at objects from that date */
+  }
+  bool filter(string& name, string& key) {
+    if (filter_exact_date)
+      return name.compare(prefix) < 0;
+    else
+      return name.compare(0, prefix.size(), prefix) <= 0;
+  }
+};
+
+enum IntentFlags { // bitmask
+  I_DEL_OBJ = 1,
+};
+
+int process_intent_log(string& bucket, string& oid, time_t epoch, IntentFlags flags, bool purge)
+{
+  uint64_t size;
+  rgw_obj obj(bucket, oid);
+  int r = rgwstore->obj_stat(NULL, obj, &size, NULL);
+  if (r < 0) {
+    cerr << "error while doing stat on " << bucket << ":" << oid
+	 << " " << cpp_strerror(-r) << std::endl;
+    return -r;
+  }
+  bufferlist bl;
+  r = rgwstore->read(NULL, obj, 0, size, bl);
+  if (r < 0) {
+    cerr << "error while reading from " <<  bucket << ":" << oid
+	 << " " << cpp_strerror(-r) << std::endl;
+    return -r;
+  }
+
+  bufferlist::iterator iter = bl.begin();
+  string id;
+  bool complete = true;
+  try {
+    while (!iter.end()) {
+      struct rgw_intent_log_entry entry;
+      ::decode(entry, iter);
+      if (entry.op_time.sec() > epoch) {
+        cerr << "skipping entry for obj=" << obj << " entry.op_time=" << entry.op_time.sec() << " requested epoch=" << epoch << std::endl;
+        cerr << "skipping intent log" << std::endl; // no use to continue
+        complete = false;
+        break;
+      }
+      switch (entry.intent) {
+      case DEL_OBJ:
+        if (!flags & I_DEL_OBJ) {
+          complete = false;
+          break;
+        }
+        r = rgwstore->delete_obj(NULL, id, entry.obj);
+        if (r < 0 && r != -ENOENT) {
+          cerr << "failed to remove obj: " << entry.obj << std::endl;
+          complete = false;
+        }
+        break;
+      default:
+        complete = false;
+      }
+    }
+  } catch (buffer::error& err) {
+    cerr << "failed to decode intent log entry in " << bucket << ":" << oid << std::endl;
+    complete = false;
+  }
+
+  if (complete) {
+    rgw_obj obj(bucket, oid);
+    cout << "completed intent log: " << obj << (purge ? ", purging it" : "") << std::endl;
+    if (purge) {
+      r = rgwstore->delete_obj(NULL, id, obj);
+      if (r < 0)
+        cerr << "failed to remove obj: " << obj << std::endl;
+    }
+  }
+
+  return 0;
+}
+
 
 int main(int argc, char **argv) 
 {
@@ -373,6 +469,7 @@ int main(int argc, char **argv)
   const char *openstack_user = 0;
   const char *openstack_key = 0;
   const char *date = 0;
+  const char *time = 0;
   const char *subuser = 0;
   const char *access = 0;
   uint32_t perm_mask = 0;
@@ -389,7 +486,7 @@ int main(int argc, char **argv)
   bool user_modify_op;
   int pool_id = -1;
   const char *format = 0;
-  RGWFormatter *formatter = &formatter_xml;
+  Formatter *formatter = &formatter_xml;
   bool purge_data = false;
 
   FOR_EACH_ARG(args) {
@@ -424,6 +521,8 @@ int main(int argc, char **argv)
       CEPH_ARGPARSE_SET_ARG_VAL(&openstack_key, OPT_STR);
     } else if (CEPH_ARGPARSE_EQ("date", '\0')) {
       CEPH_ARGPARSE_SET_ARG_VAL(&date, OPT_STR);
+    } else if (CEPH_ARGPARSE_EQ("time", '\0')) {
+      CEPH_ARGPARSE_SET_ARG_VAL(&time, OPT_STR);
     } else if (CEPH_ARGPARSE_EQ("access", '\0')) {
       CEPH_ARGPARSE_SET_ARG_VAL(&access, OPT_STR);
       perm_mask = str_to_perm(access);
@@ -701,7 +800,7 @@ int main(int argc, char **argv)
     string bucket_str(bucket);
     string object_str(object);
     rgw_obj obj(bucket_str, object_str);
-    int ret = store->get_attr(obj, RGW_ATTR_ACL, bl);
+    int ret = store->get_attr(NULL, obj, RGW_ATTR_ACL, bl);
 
     RGWAccessControlPolicy policy;
     if (ret >= 0) {
@@ -754,7 +853,7 @@ int main(int argc, char **argv)
     bufferlist aclbl;
     rgw_obj obj(bucket_str, no_oid);
 
-    int r = rgwstore->get_attr(obj, RGW_ATTR_ACL, aclbl);
+    int r = rgwstore->get_attr(NULL, obj, RGW_ATTR_ACL, aclbl);
     if (r >= 0) {
       RGWAccessControlPolicy policy;
       ACLOwner owner;
@@ -793,6 +892,63 @@ int main(int argc, char **argv)
     return -r;
   }
 
+  if (opt_cmd == OPT_TEMP_REMOVE) {
+    if (!date) {
+      cerr << "date wasn't specified" << std::endl;
+      return usage();
+    }
+
+    struct tm tm;
+
+    string format = "%Y-%m-%d";
+    string datetime = date;
+    if (datetime.size() != 10) {
+      cerr << "bad date format" << std::endl;
+      return -EINVAL;
+    }
+
+    if (time) {
+      string time_str = time;
+      if (time_str.size() != 5 && time_str.size() != 8) {
+        cerr << "bad time format" << std::endl;
+        return -EINVAL;
+      }
+      format.append(" %H:%M:%S");
+      datetime.append(time);
+    }
+    const char *s = strptime(datetime.c_str(), format.c_str(), &tm);
+    if (s && *s) {
+      cerr << "failed to parse date/time" << std::endl;
+      return -EINVAL;
+    }
+    time_t epoch = mktime(&tm);
+    string bucket = RGW_INTENT_LOG_BUCKET_NAME;
+    string prefix, delim, marker;
+    vector<RGWObjEnt> objs;
+    map<string, bool> common_prefixes;
+    string ns;
+    string id;
+
+    int max = 1000;
+    bool is_truncated;
+    IntentLogNameFilter filter(date, &tm);
+    do {
+      int r = store->list_objects(id, bucket, max, prefix, delim, marker,
+                          objs, common_prefixes, false, ns,
+                          &is_truncated, &filter);
+      if (r == -ENOENT)
+        break;
+      if (r < 0) {
+        cerr << "failed to list objects" << std::endl;
+      }
+      vector<RGWObjEnt>::iterator iter;
+      for (iter = objs.begin(); iter != objs.end(); ++iter) {
+        cout << "processing intent log " << (*iter).name << std::endl;
+        process_intent_log(bucket, (*iter).name, epoch, I_DEL_OBJ, true);
+      }
+    } while (is_truncated);
+  }
+
   if (opt_cmd == OPT_LOG_SHOW) {
     if (!object && (!date || !bucket || pool_id < 0)) {
       cerr << "object or (at least one of date, bucket, pool-id) were not specified" << std::endl;
@@ -815,14 +971,14 @@ int main(int argc, char **argv)
 
     uint64_t size;
     rgw_obj obj(log_bucket, oid);
-    int r = store->obj_stat(obj, &size, NULL);
+    int r = store->obj_stat(NULL, obj, &size, NULL);
     if (r < 0) {
       cerr << "error while doing stat on " <<  log_bucket << ":" << oid
 	   << " " << cpp_strerror(-r) << std::endl;
       return -r;
     }
     bufferlist bl;
-    r = store->read(obj, 0, size, bl);
+    r = store->read(NULL, obj, 0, size, bl);
     if (r < 0) {
       cerr << "error while reading from " <<  log_bucket << ":" << oid
 	   << " " << cpp_strerror(-r) << std::endl;
@@ -835,12 +991,14 @@ int main(int argc, char **argv)
     const char *delim = " ";
 
     if (format) {
-      formatter->init();
+      formatter->reset();
       formatter->open_array_section("Log");
     }
 
     while (!iter.end()) {
       ::decode(entry, iter);
+
+      uint64_t total_time =  entry.total_time.sec() * 1000000LL * entry.total_time.usec();
 
       if (!format) { // for now, keeping backward compatibility a bit
         cout << (entry.owner.size() ? entry.owner : "-" ) << delim
@@ -855,37 +1013,37 @@ int main(int argc, char **argv)
              << entry.bytes_sent << delim
              << entry.bytes_received << delim
              << entry.obj_size << delim
-             << entry.total_time.usec() << delim
+             << total_time << delim
              << "\"" << escape_str(entry.user_agent, '"') << "\"" << delim
              << "\"" << escape_str(entry.referrer, '"') << "\"" << std::endl;
       } else {
-        formatter->open_obj_section("LogEntry");
-        formatter->dump_value_str("Bucket", "%s", entry.bucket.c_str());
+        formatter->open_object_section("LogEntry");
+        formatter->dump_format("Bucket", "%s", entry.bucket.c_str());
 
         stringstream ss;
         ss << entry.time;
         string s = ss.str();
 
-        formatter->dump_value_str("Time", "%s", s.c_str());
-        formatter->dump_value_str("RemoteAddr", "%s", entry.remote_addr.c_str());
-        formatter->dump_value_str("User", "%s", entry.user.c_str());
-        formatter->dump_value_str("Operation", "%s", entry.op.c_str());
-        formatter->dump_value_str("URI", "%s", entry.uri.c_str());
-        formatter->dump_value_str("HttpStatus", "%s", entry.http_status.c_str());
-        formatter->dump_value_str("ErrorCode", "%s", entry.error_code.c_str());
-        formatter->dump_value_str("BytesSent", "%lld", entry.bytes_sent);
-        formatter->dump_value_str("BytesReceived", "%lld", entry.bytes_received);
-        formatter->dump_value_str("ObjectSize", "%lld", entry.obj_size);
-        formatter->dump_value_str("TotalTime", "%lld", (uint64_t)entry.total_time.usec());
-        formatter->dump_value_str("UserAgent", "%s",  entry.user_agent.c_str());
-        formatter->dump_value_str("Referrer", "%s",  entry.referrer.c_str());
-        formatter->close_section("LogEntry");
+        formatter->dump_format("Time", "%s", s.c_str());
+        formatter->dump_format("RemoteAddr", "%s", entry.remote_addr.c_str());
+        formatter->dump_format("User", "%s", entry.user.c_str());
+        formatter->dump_format("Operation", "%s", entry.op.c_str());
+        formatter->dump_format("URI", "%s", entry.uri.c_str());
+        formatter->dump_format("HttpStatus", "%s", entry.http_status.c_str());
+        formatter->dump_format("ErrorCode", "%s", entry.error_code.c_str());
+        formatter->dump_format("BytesSent", "%lld", entry.bytes_sent);
+        formatter->dump_format("BytesReceived", "%lld", entry.bytes_received);
+        formatter->dump_format("ObjectSize", "%lld", entry.obj_size);
+        formatter->dump_format("TotalTime", "%lld", total_time);
+        formatter->dump_format("UserAgent", "%s",  entry.user_agent.c_str());
+        formatter->dump_format("Referrer", "%s",  entry.referrer.c_str());
+        formatter->close_section();
         formatter->flush(cout);
       }
     }
 
     if (format) {
-      formatter->close_section("Log");
+      formatter->close_section();
       formatter->flush(cout);
     }
 
@@ -902,12 +1060,12 @@ int main(int argc, char **argv)
       cerr << "could not retrieve pool info for pool_id=" << pool_id << std::endl;
       return ret;
     }
-    formatter->init();
-    formatter->open_obj_section("Pool");
-    formatter->dump_value_int("ID", "%d", pool_id);
-    formatter->dump_value_str("Bucket", "%s", info.bucket.c_str());
-    formatter->dump_value_str("Owner", "%s", info.owner.c_str());
-    formatter->close_section("Pool");
+    formatter->reset();
+    formatter->open_object_section("Pool");
+    formatter->dump_int("ID", pool_id);
+    formatter->dump_format("Bucket", "%s", info.bucket.c_str());
+    formatter->dump_format("Owner", "%s", info.owner.c_str());
+    formatter->close_section();
     formatter->flush(cout);
   }
 
@@ -920,7 +1078,7 @@ int main(int argc, char **argv)
     bufferlist bl;
     rgw_obj obj(bucket_str, no_object);
 
-    ret = rgwstore->get_attr(obj, RGW_ATTR_ACL, bl);
+    ret = rgwstore->get_attr(NULL, obj, RGW_ATTR_ACL, bl);
     if (ret < 0) {
       RGW_LOG(0) << "can't read bucket acls: " << ret << dendl;
       return ret;

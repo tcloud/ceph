@@ -28,9 +28,18 @@
 
 using namespace std;
 
+namespace ceph {
+  class Formatter;
+}
+
 using ceph::crypto::MD5;
 
 extern string rgw_root_bucket;
+
+extern string rgw_obj_category_main;
+extern string rgw_obj_category_shadow;
+extern string rgw_obj_category_multimeta;
+extern string rgw_obj_category_none;
 
 #define RGW_ROOT_BUCKET ".rgw"
 
@@ -43,6 +52,8 @@ extern string rgw_root_bucket;
 #define RGW_ATTR_BUCKETS	RGW_ATTR_PREFIX "buckets"
 #define RGW_ATTR_META_PREFIX	RGW_ATTR_PREFIX "x-amz-meta-"
 #define RGW_ATTR_CONTENT_TYPE	RGW_ATTR_PREFIX "content_type"
+#define RGW_ATTR_ID_TAG    	RGW_ATTR_PREFIX "idtag"
+#define RGW_ATTR_SHADOW_OBJ    	RGW_ATTR_PREFIX "shadow_name"
 
 #define RGW_BUCKETS_OBJ_PREFIX ".buckets"
 
@@ -67,7 +78,15 @@ extern string rgw_root_bucket;
    int __ret = FCGX_FPrintF(state->fcgx->out, format, __VA_ARGS__); \
    if (state->header_ended) \
      state->bytes_sent += __ret; \
-   printf(">" format, __VA_ARGS__); \
+   int l = 32, n; \
+   while (1) { \
+     char __buf[l]; \
+     n = snprintf(__buf, sizeof(__buf), format, __VA_ARGS__); \
+     if (n != l) \
+       RGW_LOG(0) << "--> " << __buf << dendl; \
+       break; \
+     l *= 2; \
+   } \
 } while (0)
 
 #define CGI_PutStr(state, buf, len) do { \
@@ -91,7 +110,9 @@ extern string rgw_root_bucket;
 #define ERR_INVALID_PART        2007
 #define ERR_INVALID_PART_ORDER  2008
 #define ERR_NO_SUCH_UPLOAD      2009
-
+#define ERR_REQUEST_TIMEOUT     2010
+#define ERR_LENGTH_REQUIRED     2011
+#define ERR_REQUEST_TIME_SKEWED 2012
 #define ERR_USER_SUSPENDED      2100
 
 typedef void *RGWAccessHandle;
@@ -100,6 +121,10 @@ typedef void *RGWAccessHandle;
 extern int gen_rand_base64(char *dest, int size);
 extern int gen_rand_alphanumeric(char *dest, int size);
 extern int gen_rand_alphanumeric_upper(char *dest, int size);
+
+enum RGWIntentEvent {
+  DEL_OBJ,
+};
 
 /** Store error returns for output at a different point in the program */
 struct rgw_err {
@@ -344,36 +369,6 @@ WRITE_CLASS_ENCODER(RGWPoolInfo)
 
 struct req_state;
 
-class RGWFormatter {
-protected:
-  char *buf;
-  int len;
-  int max_len;
-
-  virtual void formatter_init() = 0;
-public:
-  RGWFormatter() : buf(NULL), len(0), max_len(0) {}
-  virtual ~RGWFormatter() {}
-  void init() {
-    if (buf)
-      free(buf);
-    buf = NULL;
-    len = 0;
-    max_len = 0;
-    formatter_init();
-  }
-  void reset();
-  void write_data(const char *fmt, ...);
-  virtual void flush(struct req_state *s);
-  virtual void flush(ostream& os);
-  virtual int get_len() { return (len ? len - 1 : 0); } // don't include null termination in length
-  virtual void open_array_section(const char *name) = 0;
-  virtual void open_obj_section(const char *name) = 0;
-  virtual void close_section(const char *name) = 0;
-  virtual void dump_value_int(const char *name, const char *fmt, ...) = 0;
-  virtual void dump_value_str(const char *name, const char *fmt, ...) = 0;
-};
-
 struct RGWEnv;
 
 /** Store all the state necessary to complete and respond to an HTTP request*/
@@ -382,13 +377,14 @@ struct req_state {
    http_op op;
    bool content_started;
    int format;
-   RGWFormatter *formatter;
+   ceph::Formatter *formatter;
    const char *path_name;
    string path_name_url;
    const char *host;
    const char *method;
    const char *query;
    const char *length;
+   uint64_t content_length;
    const char *content_type;
    struct rgw_err err;
    bool expect_cont;
@@ -398,6 +394,7 @@ struct req_state {
    uint64_t obj_size;
    bool should_log;
    uint32_t perm_mask;
+   utime_t header_time;
 
    XMLArgs args;
 
@@ -430,9 +427,14 @@ struct req_state {
 
    struct RGWEnv *env;
 
+   void *obj_ctx;
+
    req_state(struct RGWEnv *e);
    ~req_state();
 };
+
+extern void flush_formatter_to_req_state(struct req_state *s,
+					 ceph::Formatter *formatter);
 
 /** Store basic data on an object */
 struct RGWObjEnt {
@@ -596,6 +598,13 @@ public:
     set_key(orig_key);
   }
 
+  string loc() {
+    if (orig_key.empty())
+      return orig_obj;
+    else
+      return orig_key;
+  }
+
   static bool translate_raw_obj(string& obj, string& ns) {
     if (ns.empty()) {
       if (obj[0] != '_')
@@ -639,6 +648,12 @@ public:
     ::decode(key, bl);
     ::decode(ns, bl);
     ::decode(object, bl);
+  }
+
+  bool operator<(const rgw_obj& o) const {
+    return  (bucket.compare(o.bucket) < 0) ||
+            (object.compare(o.object) < 0) ||
+            (ns.compare(o.ns) < 0);
   }
 };
 WRITE_CLASS_ENCODER(rgw_obj)

@@ -51,7 +51,7 @@ void ceph_shutdown(struct ceph_mount_info *cmount);
  */
 int ceph_conf_read_file(struct ceph_mount_info *cmount, const char *path_list);
 
-void ceph_conf_parse_argv(struct ceph_mount_info *cmount, int argc, const char **argv);
+int ceph_conf_parse_argv(struct ceph_mount_info *cmount, int argc, const char **argv);
 
 /* Sets a configuration value from a string.
  * Returns 0 on success, error code otherwise. */
@@ -160,7 +160,7 @@ int ceph_localize_reads(struct ceph_mount_info *cmount, int val);
 int ceph_get_local_osd(struct ceph_mount_info *cmount);
 
 /* Get the CephContext of this mount */
-CephContext *ceph_get_mount_context(struct ceph_mount_info *cmount);
+struct CephContext *ceph_get_mount_context(struct ceph_mount_info *cmount);
 
 #ifdef __cplusplus
 }

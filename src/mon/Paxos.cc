@@ -189,9 +189,6 @@ void Paxos::share_state(MMonPaxos *m, version_t peer_first_committed, version_t 
 
 void Paxos::store_state(MMonPaxos *m)
 {
-  //bool big_sync = m->values.size() > 5;
-  bool big_sync = false;
-
   // stash?
   if (m->latest_version && m->latest_version > last_committed) {
     dout(10) << "store_state got stash version " << m->latest_version << ", zapping old states" << dendl;
@@ -205,21 +202,40 @@ void Paxos::store_state(MMonPaxos *m)
     last_committed = m->latest_version;
     first_committed = last_committed;
     mon->store->put_int(first_committed, machine_name, "first_committed");
+    mon->store->put_int(last_committed, machine_name, "last_committed");
+    return;
   }
 
-  for (map<version_t,bufferlist>::iterator p = m->values.begin();
-       p != m->values.end() && p->first <= m->last_committed;
-       ++p) {
-    if (p->first <= last_committed)
-      continue;
-    if (p->first > last_committed + 1)
-      break;
-    last_committed = p->first;
-    dout(10) << "store_state got " << last_committed << " (" << p->second.length() << " bytes)" << dendl;
-    mon->store->put_bl_sn(p->second, machine_name, last_committed, big_sync);
+  // build map of values to store
+  // we want to write the range [last_committed, m->last_committed] only.
+  map<version_t,bufferlist>::iterator start = m->values.begin();
+
+  if (start != m->values.end() &&
+      start->first > last_committed + 1) {
+    // ignore everything if values start in the future.
+    dout(10) << "store_state ignoring all values, they start at " << start->first
+	     << " > last_committed+1" << dendl;
+    start = m->values.end();
   }
 
-  mon->store->put_int(last_committed, machine_name, "last_committed", big_sync);
+  while (start != m->values.end() &&
+	 start->first <= last_committed)
+    ++start;
+
+  map<version_t,bufferlist>::iterator end = start;
+  while (end != m->values.end() &&
+	 end->first <= m->last_committed) {
+    last_committed = end->first;
+    ++end;
+  }
+
+  if (start == end) {
+    dout(10) << "store_state nothing to commit" << dendl;
+  } else {
+    dout(10) << "store_state [" << start->first << ".." << last_committed << "]" << dendl;
+    mon->store->put_bl_sn_map(machine_name, start, end);
+    mon->store->put_int(last_committed, machine_name, "last_committed");
+  }
 }
 
 

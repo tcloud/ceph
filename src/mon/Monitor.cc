@@ -23,6 +23,8 @@
 #include "messages/PaxosServiceMessage.h"
 #include "messages/MMonMap.h"
 #include "messages/MMonGetMap.h"
+#include "messages/MMonGetVersion.h"
+#include "messages/MMonGetVersionReply.h"
 #include "messages/MGenericMessage.h"
 #include "messages/MMonCommand.h"
 #include "messages/MMonCommandAck.h"
@@ -45,6 +47,7 @@
 #include "common/DoutStreambuf.h"
 #include "common/errno.h"
 #include "include/color.h"
+#include "include/ceph_fs.h"
 
 #include "OSDMonitor.h"
 #include "MDSMonitor.h"
@@ -360,7 +363,10 @@ void Monitor::handle_command(MMonCommand *m)
     if (m->cmd[0] == "injectargs") {
       if (m->cmd.size() == 2) {
 	dout(0) << "parsing injected options '" << m->cmd[1] << "'" << dendl;
-	g_conf->injectargs(m->cmd[1]);
+	ostringstream oss;
+	g_conf->injectargs(m->cmd[1], &oss);
+	derr << "injectargs:" << dendl;
+	derr << oss.str() << dendl;
 	rs = "parsed options";
 	r = 0;
       } else {
@@ -716,6 +722,10 @@ bool Monitor::_ms_dispatch(Message *m)
       handle_mon_get_map((MMonGetMap*)m);
       break;
 
+    case CEPH_MSG_MON_GET_VERSION:
+      handle_get_version((MMonGetVersion*)m);
+      break;
+
     case MSG_MON_COMMAND:
       handle_command((MMonCommand*)m);
       break;
@@ -870,6 +880,36 @@ void Monitor::handle_subscribe(MMonSubscribe *m)
   if (reply)
     messenger->send_message(new MMonSubscribeAck(monmap->get_fsid(), (int)g_conf->mon_subscribe_interval),
 			    m->get_source_inst());
+
+  s->put();
+  m->put();
+}
+
+void Monitor::handle_get_version(MMonGetVersion *m)
+{
+  dout(10) << "handle_get_version " << *m << dendl;
+
+  MonSession *s = (MonSession *)m->get_connection()->get_priv();
+  if (!s) {
+    dout(10) << " no session, dropping" << dendl;
+    m->put();
+    return;
+  }
+
+  MMonGetVersionReply *reply = new MMonGetVersionReply();
+  reply->handle = m->handle;
+
+  if (m->what == "mdsmap") {
+    reply->version = mdsmon()->mdsmap.get_epoch();
+  } else if (m->what == "osdmap") {
+    reply->version = osdmon()->osdmap.get_epoch();
+  } else if (m->what == "monmap") {
+    reply->version = monmap->get_epoch();
+  } else {
+    derr << "invalid map type " << m->what << dendl;
+  }
+
+  messenger->send_message(reply, m->get_source_inst());
 
   s->put();
   m->put();

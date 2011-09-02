@@ -1577,6 +1577,7 @@ public:
   void share_pg_log(const eversion_t &oldver);
 
   void warm_restart(const OSDMap& lastmap, const vector<int>& newup, const vector<int>& newacting);
+  void reset_last_warm_restart();
 		    
   void fulfill_info(int from, const Query &query, 
 		    pair<int, Info> &notify_info);
@@ -1639,6 +1640,7 @@ public:
   virtual void on_role_change() = 0;
   virtual void on_change() = 0;
   virtual void on_shutdown() = 0;
+  virtual void remove_watchers() = 0;
 };
 
 //WRITE_CLASS_ENCODER(PG::Info::History)
@@ -1673,7 +1675,7 @@ inline ostream& operator<<(ostream& out, const PG::Info& pgi)
         << (pgi.log_backlog ? "+backlog":"");
   }
   //out << " c " << pgi.epoch_created;
-  out << " n=" << pgi.stats.num_objects;
+  out << " n=" << pgi.stats.stats.sum.num_objects;
   out << " " << pgi.history
       << ")";
   return out;

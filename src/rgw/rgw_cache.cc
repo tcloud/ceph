@@ -7,9 +7,11 @@ using namespace std;
 
 int ObjectCache::get(string& name, ObjectCacheInfo& info, uint32_t mask)
 {
+  Mutex::Locker l(lock);
+
   map<string, ObjectCacheEntry>::iterator iter = cache_map.find(name);
   if (iter == cache_map.end()) {
-    RGW_LOG(0) << "cache get: name=" << name << " : miss" << dendl;
+    RGW_LOG(10) << "cache get: name=" << name << " : miss" << dendl;
     return -ENOENT;
   }
 
@@ -17,10 +19,10 @@ int ObjectCache::get(string& name, ObjectCacheInfo& info, uint32_t mask)
 
   ObjectCacheInfo& src = iter->second.info;
   if ((src.flags & mask) != mask) {
-    RGW_LOG(0) << "cache get: name=" << name << " : type miss (requested=" << mask << ", cached=" << src.flags << dendl;
+    RGW_LOG(10) << "cache get: name=" << name << " : type miss (requested=" << mask << ", cached=" << src.flags << dendl;
     return -ENOENT;
   }
-  RGW_LOG(0) << "cache get: name=" << name << " : hit" << dendl;
+  RGW_LOG(10) << "cache get: name=" << name << " : hit" << dendl;
 
   info = src;
 
@@ -29,7 +31,9 @@ int ObjectCache::get(string& name, ObjectCacheInfo& info, uint32_t mask)
 
 void ObjectCache::put(string& name, ObjectCacheInfo& info)
 {
-  RGW_LOG(0) << "cache put: name=" << name << dendl;
+  Mutex::Locker l(lock);
+
+  RGW_LOG(10) << "cache put: name=" << name << dendl;
   map<string, ObjectCacheEntry>::iterator iter = cache_map.find(name);
   if (iter == cache_map.end()) {
     ObjectCacheEntry entry;
@@ -67,6 +71,8 @@ void ObjectCache::put(string& name, ObjectCacheInfo& info)
 
 void ObjectCache::remove(string& name)
 {
+  Mutex::Locker l(lock);
+
   map<string, ObjectCacheEntry>::iterator iter = cache_map.find(name);
   if (iter == cache_map.end())
     return;
@@ -93,7 +99,6 @@ void ObjectCache::touch_lru(string& name, std::list<string>::iterator& lru_iter)
     lru_iter--;
     RGW_LOG(10) << "adding " << name << " to cache LRU end" << dendl;
   } else {
-    string name = *lru_iter;
     RGW_LOG(10) << "moving " << name << " to cache LRU end" << dendl;
     lru.erase(lru_iter);
     lru.push_back(name);

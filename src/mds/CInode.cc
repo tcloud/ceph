@@ -12,9 +12,6 @@
  * 
  */
 
-
-#define __STDC_FORMAT_MACROS
-
 #include "CInode.h"
 #include "CDir.h"
 #include "CDentry.h"
@@ -370,7 +367,7 @@ sr_t *CInode::project_snaprealm(snapid_t snapid)
 
 /* if newparent != parent, add parent to past_parents
  if parent DNE, we need to find what the parent actually is and fill that in */
-void CInode::project_past_snaprealm_parent(SnapRealm *newparent, bufferlist& snapbl)
+void CInode::project_past_snaprealm_parent(SnapRealm *newparent)
 {
   sr_t *new_snap = project_snaprealm();
   SnapRealm *oldparent;
@@ -387,7 +384,6 @@ void CInode::project_past_snaprealm_parent(SnapRealm *newparent, bufferlist& sna
     new_snap->past_parents[oldparentseq].first = new_snap->current_parent_since;
     new_snap->current_parent_since = MAX(oldparentseq, newparent->get_last_created()) + 1;
   }
-  new_snap->encode(snapbl);
 }
 
 void CInode::pop_projected_snaprealm(sr_t *next_snaprealm)
@@ -1461,9 +1457,9 @@ bool CInode::is_dirty_scattered()
 
 void CInode::clear_scatter_dirty()
 {
-  filelock.clear_dirty();
-  nestlock.clear_dirty();
-  dirfragtreelock.clear_dirty();
+  filelock.remove_dirty();
+  nestlock.remove_dirty();
+  dirfragtreelock.remove_dirty();
 }
 
 void CInode::clear_dirty_scattered(int type)
@@ -2004,6 +2000,11 @@ pair<int,int> CInode::authority()
   if (parent)
     return parent->dir->authority();
 
+  // new items that are not yet linked in (in the committed plane) belong
+  // to their first parent.
+  if (!projected_parent.empty())
+    return projected_parent.front()->dir->authority();
+
   return CDIR_AUTH_UNDEF;
 }
 
@@ -2134,7 +2135,7 @@ SnapRealm *CInode::find_snaprealm()
 void CInode::encode_snap_blob(bufferlist &snapbl)
 {
   if (snaprealm) {
-    ::encode(*snaprealm, snapbl);
+    ::encode(snaprealm->srnode, snapbl);
     dout(20) << "encode_snap_blob " << *snaprealm << dendl;
   }
 }
@@ -2143,7 +2144,7 @@ void CInode::decode_snap_blob(bufferlist& snapbl)
   if (snapbl.length()) {
     open_snaprealm();
     bufferlist::iterator p = snapbl.begin();
-    ::decode(*snaprealm, p);
+    ::decode(snaprealm->srnode, p);
     dout(20) << "decode_snap_blob " << *snaprealm << dendl;
   }
 }
@@ -2283,8 +2284,9 @@ Capability *CInode::add_client_cap(client_t client, Session *session, SnapRealm 
   if (client_caps.empty())
     mdcache->num_inodes_with_caps++;
   
+  Capability *cap = new Capability(this, ++mdcache->last_cap_id, client);
   assert(client_caps.count(client) == 0);
-  Capability *cap = client_caps[client] = new Capability(this, ++mdcache->last_cap_id, client);
+  client_caps[client] = cap;
   if (session)
     session->add_cap(cap);
   

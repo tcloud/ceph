@@ -19,6 +19,8 @@
 #include "OSDMonitor.h"
 
 #include "common/strtol.h"
+#include "common/ceph_argparse.h"
+
 #include "messages/MMDSMap.h"
 #include "messages/MMDSBeacon.h"
 #include "messages/MMDSLoadTargets.h"
@@ -349,14 +351,16 @@ bool MDSMonitor::prepare_beacon(MMDSBeacon *m)
     info.standby_for_name = m->get_standby_for_name();
 
     if (!info.standby_for_name.empty()) {
-      if (mdsmap.find_by_name(info.standby_for_name))
+      const MDSMap::mds_info_t *leaderinfo = mdsmap.find_by_name(info.standby_for_name);
+      if (leaderinfo && (leaderinfo->rank >= 0)) {
         info.standby_for_rank =
             mdsmap.find_by_name(info.standby_for_name)->rank;
+        if (mdsmap.is_followable(info.standby_for_rank)) {
+          info.state = MDSMap::STATE_STANDBY_REPLAY;
+        }
+      }
     }
-    if (info.standby_for_rank >= 0 && 
-	mdsmap.is_followable(info.standby_for_rank)) {
-      info.state = MDSMap::STATE_STANDBY_REPLAY;
-    }
+
 
     // initialize the beacon timer
     last_beacon[gid].stamp = ceph_clock_now(g_ceph_context);
@@ -484,17 +488,32 @@ bool MDSMonitor::preprocess_command(MMonCommand *m)
   bufferlist rdata;
   stringstream ss;
 
+  vector<const char*> args;
+  for (unsigned i = 1; i < m->cmd.size(); i++)
+    args.push_back(m->cmd[i].c_str());
+
   if (m->cmd.size() > 1) {
     if (m->cmd[1] == "stat") {
       ss << mdsmap;
       r = 0;
     } 
     else if (m->cmd[1] == "dump") {
+      string format = "plain";
+      string val;
+      epoch_t epoch = 0;
+      for (std::vector<const char*>::iterator i = args.begin()+1; i != args.end(); ) {
+	if (ceph_argparse_witharg(args, i, &val, "-f", "--format", (char*)NULL))
+	  format = val;
+	else if (!epoch)
+	  epoch = atoi(*i++);
+	else
+	  i++;
+      }
+
       MDSMap *p = &mdsmap;
-      if (m->cmd.size() > 2) {
-	epoch_t e = atoi(m->cmd[2].c_str());
+      if (epoch) {
 	bufferlist b;
-	mon->store->get_bl_sn(b,"mdsmap",e);
+	mon->store->get_bl_sn(b, "mdsmap", epoch);
 	if (!b.length()) {
 	  p = 0;
 	  r = -ENOENT;
@@ -505,12 +524,26 @@ bool MDSMonitor::preprocess_command(MMonCommand *m)
       }
       if (p) {
 	stringstream ds;
-	p->print(ds);
-	rdata.append(ds);
-	ss << "dumped mdsmap epoch " << p->get_epoch();
+	if (format == "json") {
+	  JSONFormatter jf(true);
+	  jf.open_object_section("mdsmap");
+	  p->dump(&jf);
+	  jf.close_section();
+	  jf.flush(ds);
+	  r = 0;
+	} else if (format == "plain") {
+	  p->print(ds);
+	  r = 0;
+	} else {
+	  ss << "unrecognized format '" << format << "'";
+	  r = -EINVAL;
+	}
+	if (r == 0) {
+	  rdata.append(ds);
+	  ss << "dumped mdsmap epoch " << p->get_epoch();
+	}
 	if (p != &mdsmap)
 	  delete p;
-	r = 0;
       }
     }
     else if (m->cmd[1] == "getmap") {
@@ -538,11 +571,12 @@ bool MDSMonitor::preprocess_command(MMonCommand *m)
       if (m->cmd[0] == "*") {
 	m->cmd.erase(m->cmd.begin()); //and now we're done with the target num
 	r = -ENOENT;
-	for (unsigned i = 0; i < mdsmap.get_max_mds(); ++i) {
-	  if (mdsmap.is_active(i)) {
-	    mon->send_command(mdsmap.get_inst(i), m->cmd, paxos->get_version());
-	    r = 0;
-	  }
+	const map<uint64_t, MDSMap::mds_info_t> mds_info = mdsmap.get_mds_info();
+	for (map<uint64_t, MDSMap::mds_info_t>::const_iterator i = mds_info.begin();
+	     i != mds_info.end();
+	     ++i) {
+	  mon->send_command(i->second.get_inst(), m->cmd, paxos->get_version());
+	  r = 0;
 	}
 	if (r == -ENOENT) {
 	  ss << "no mds active";
@@ -787,6 +821,16 @@ bool MDSMonitor::prepare_command(MMonCommand *m)
 	  r = -ENOENT;
 	}
       }
+    } else if (m->cmd[1] == "add_data_pool" && m->cmd.size() == 3) {
+      int poolid = atoi(m->cmd[2].c_str());
+      pending_mdsmap.add_data_pg_pool(poolid);
+      ss << "added data pool " << poolid << " to mdsmap";
+      r = 0;
+    } else if (m->cmd[1] == "remove_data_pool" && m->cmd.size() == 3) {
+      int poolid = atoi(m->cmd[2].c_str());
+      r = pending_mdsmap.remove_data_pg_pool(poolid);
+      if (r == 0)
+	ss << "removed data pool " << poolid << " from mdsmap";
     } else if (m->cmd[1] == "newfs" && m->cmd.size() == 4) {
       MDSMap newmap(g_ceph_context);
       int metadata = atoi(m->cmd[2].c_str());

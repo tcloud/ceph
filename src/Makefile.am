@@ -17,7 +17,7 @@ check_PROGRAMS =
 TESTS = $(check_PROGRAMS)
 
 
-EXTRALIBS =
+EXTRALIBS = -lrt
 if WITH_PROFILER
 EXTRALIBS += -lprofiler
 endif
@@ -47,7 +47,8 @@ cmds_CXXFLAGS = ${AM_CXXFLAGS}
 # admin tools
 ceph_SOURCES = \
 	tools/ceph.cc \
-	tools/common.cc
+	tools/common.cc \
+	mon/PGMap.cc
 ceph_LDADD = $(LIBGLOBAL_LDA) -ledit
 ceph_CXXFLAGS = ${AM_CXXFLAGS}
 
@@ -73,6 +74,7 @@ ceph_tool_gui_DATA = \
 	tools/gui_resources/stopped_mds.svg
 gceph_SOURCES = \
 	tools/common.cc \
+	mon/PGMap.cc \
 	tools/gceph.cc \
 	tools/gui.cc
 gceph_LDADD = $(LIBGLOBAL_LDA) -ledit $(GTKMM_LIBS)
@@ -222,7 +224,9 @@ noinst_LIBRARIES =
 # libceph
 libceph_la_SOURCES = \
 	libceph.cc \
-	client/Client.cc
+	client/Client.cc \
+	client/Inode.cc \
+	client/MetaRequest.cc
 libceph_la_CFLAGS= ${CRYPTO_CFLAGS} ${AM_CFLAGS}
 libceph_la_CXXFLAGS= ${CRYPTO_CXXFLAGS} ${AM_CXXFLAGS}
 libceph_la_LIBADD = libosdc.la
@@ -282,15 +286,13 @@ rados_SOURCES = rados.cc rados_sync.cc
 rados_LDADD = libglobal.la librados.la -lpthread -lm $(CRYPTO_LIBS) $(EXTRALIBS)
 bin_PROGRAMS += rados
 
-testrados_SOURCES = testrados.c
-testrados_LDADD = librados.la -lpthread -lm $(CRYPTO_LIBS) $(EXTRALIBS)
-testradospp_SOURCES = testradospp.cc
-testradospp_LDADD = librados.la -lpthread -lm
-testrados_delete_pool_while_open_SOURCES = test/testrados_delete_pool_while_open.c
-testrados_delete_pool_while_open_LDADD = librados.la -lpthread -lm $(CRYPTO_LIBS) $(EXTRALIBS)
+scratchtool_SOURCES = scratchtool.c
+scratchtool_LDADD = librados.la -lpthread -lm $(CRYPTO_LIBS) $(EXTRALIBS)
+scratchtoolpp_SOURCES = scratchtoolpp.cc
+scratchtoolpp_LDADD = librados.la -lpthread -lm
 radosacl_SOURCES = radosacl.cc
 radosacl_LDADD = librados.la -lpthread -lm $(CRYPTO_LIBS) $(EXTRALIBS)
-bin_DEBUGPROGRAMS += testrados testradospp radosacl testrados_delete_pool_while_open
+bin_DEBUGPROGRAMS += scratchtool scratchtoolpp radosacl
 
 rbd_SOURCES = rbd.cc common/fiemap.cc common/secret.c
 rbd_CXXFLAGS = ${AM_CXXFLAGS}
@@ -327,7 +329,6 @@ my_radosgw_src = \
 	rgw/rgw_formats.cc \
 	rgw/rgw_log.cc \
 	rgw/rgw_multi.cc \
-	rgw/rgw_escape.c \
 	rgw/rgw_env.cc
 
 my_radosgw_ldadd = \
@@ -407,9 +408,20 @@ bin_DEBUGPROGRAMS += testrados_open_pools_parallel
 testrados_delete_pools_parallel_SOURCES = \
 	test/system/rados_delete_pools_parallel.cc \
 	test/system/st_rados_create_pool.cc \
+	test/system/st_rados_delete_pool.cc \
 	test/system/st_rados_list_objects.cc
 testrados_delete_pools_parallel_LDADD = libsystest.la librados.la
 bin_DEBUGPROGRAMS += testrados_delete_pools_parallel
+
+testrados_watch_notify_SOURCES = \
+	test/system/rados_watch_notify.cc \
+	test/system/st_rados_create_pool.cc \
+	test/system/st_rados_delete_pool.cc \
+	test/system/st_rados_delete_objs.cc \
+	test/system/st_rados_watch.cc \
+	test/system/st_rados_notify.cc
+testrados_watch_notify_LDADD = libsystest.la librados.la
+bin_DEBUGPROGRAMS += testrados_watch_notify
 
 ## unit tests
 
@@ -475,19 +487,19 @@ unittest_bufferlist_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_bufferlist
 
 unittest_crypto_SOURCES = test/crypto.cc
-unittest_crypto_LDFLAGS = -lrt ${CRYPTO_LDFLAGS} ${AM_LDFLAGS}
+unittest_crypto_LDFLAGS = ${CRYPTO_LDFLAGS} ${AM_LDFLAGS}
 unittest_crypto_LDADD =  ${LIBGLOBAL_LDA} ${UNITTEST_LDADD}
 unittest_crypto_CXXFLAGS = ${CRYPTO_CXXFLAGS} ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_crypto
 
 unittest_perf_counters_SOURCES = test/perf_counters.cc
-unittest_perf_counters_LDFLAGS = -lrt ${AM_LDFLAGS}
+unittest_perf_counters_LDFLAGS = ${AM_LDFLAGS}
 unittest_perf_counters_LDADD =  ${LIBGLOBAL_LDA} ${UNITTEST_LDADD}
 unittest_perf_counters_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_perf_counters
 
 unittest_admin_socket_SOURCES = test/admin_socket.cc
-unittest_admin_socket_LDFLAGS = -lrt ${AM_LDFLAGS}
+unittest_admin_socket_LDFLAGS = ${AM_LDFLAGS}
 unittest_admin_socket_LDADD =  ${LIBGLOBAL_LDA} ${UNITTEST_LDADD}
 unittest_admin_socket_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_admin_socket
@@ -510,11 +522,11 @@ unittest_mime_LDADD = ${UNITTEST_LDADD} $(LIBGLOBAL_LDA)
 unittest_mime_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_mime
 
-unittest_rgw_escape_SOURCES = test/rgw_escape.cc rgw/rgw_escape.c
-unittest_rgw_escape_LDFLAGS = -pthread ${AM_LDFLAGS}
-unittest_rgw_escape_LDADD = ${UNITTEST_LDADD} $(LIBGLOBAL_LDA)
-unittest_rgw_escape_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
-check_PROGRAMS += unittest_rgw_escape
+unittest_escape_SOURCES = test/escape.cc
+unittest_escape_LDFLAGS = -pthread ${AM_LDFLAGS}
+unittest_escape_LDADD = ${UNITTEST_LDADD} $(LIBGLOBAL_LDA)
+unittest_escape_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+check_PROGRAMS += unittest_escape
 
 unittest_strtol_SOURCES = test/strtol.cc
 unittest_strtol_LDFLAGS = -pthread ${AM_LDFLAGS}
@@ -528,13 +540,91 @@ unittest_confutils_LDADD = ${UNITTEST_LDADD} $(LIBGLOBAL_LDA)
 unittest_confutils_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_confutils
 
+unittest_heartbeatmap_SOURCES = test/heartbeat_map.cc common/HeartbeatMap.cc
+unittest_heartbeatmap_LDFLAGS = -pthread ${AM_LDFLAGS}
+unittest_heartbeatmap_LDADD = ${UNITTEST_LDADD} $(LIBGLOBAL_LDA)
+unittest_heartbeatmap_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+check_PROGRAMS += unittest_heartbeatmap
+
+unittest_formatter_SOURCES = test/formatter.cc rgw/rgw_formats.cc
+unittest_formatter_LDFLAGS = -pthread ${AM_LDFLAGS}
+unittest_formatter_LDADD = ${UNITTEST_LDADD} $(LIBGLOBAL_LDA)
+unittest_formatter_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+check_PROGRAMS += unittest_formatter
+
+unittest_libceph_config_SOURCES = test/libceph_config.cc
+unittest_libceph_config_LDFLAGS = -pthread ${AM_LDFLAGS}
+unittest_libceph_config_LDADD =  libceph.la ${UNITTEST_LDADD}
+unittest_libceph_config_CXXFLAGS = ${CRYPTO_CFLAGS} ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+check_PROGRAMS += unittest_libceph_config
+
+unittest_librados_config_SOURCES = test/librados_config.cc
+unittest_librados_config_LDFLAGS = -pthread ${AM_LDFLAGS}
+unittest_librados_config_LDADD =  librados.la ${UNITTEST_LDADD}
+unittest_librados_config_CXXFLAGS = ${CRYPTO_CFLAGS} ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+check_PROGRAMS += unittest_librados_config
+
+unittest_daemon_config_SOURCES = test/daemon_config.cc
+unittest_daemon_config_LDFLAGS = -pthread ${AM_LDFLAGS}
+unittest_daemon_config_LDADD =  ${UNITTEST_LDADD} ${LIBGLOBAL_LDA}
+unittest_daemon_config_CXXFLAGS = ${CRYPTO_CFLAGS} ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+check_PROGRAMS += unittest_daemon_config
+
 if WITH_RADOSGW
 unittest_librgw_SOURCES = test/librgw.cc
-unittest_librgw_LDFLAGS = -pthread -lcurl ${AM_LDFLAGS}
+unittest_librgw_LDFLAGS = -lrt -pthread -lcurl ${AM_LDFLAGS}
 unittest_librgw_LDADD =  librgw.la ${UNITTEST_LDADD} -lexpat -lfcgi $(LIBGLOBAL_LDA)
 unittest_librgw_CXXFLAGS = ${CRYPTO_CFLAGS} ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
 check_PROGRAMS += unittest_librgw
 endif
+
+test_rados_api_io_SOURCES = test/rados-api/io.cc test/rados-api/test.cc
+test_rados_api_io_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_io_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_io_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_io
+
+test_rados_api_aio_SOURCES = test/rados-api/aio.cc test/rados-api/test.cc
+test_rados_api_aio_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_aio_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_aio_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_aio
+
+test_rados_api_list_SOURCES = test/rados-api/list.cc test/rados-api/test.cc
+test_rados_api_list_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_list_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_list_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_list
+
+test_rados_api_pool_SOURCES = test/rados-api/pool.cc test/rados-api/test.cc
+test_rados_api_pool_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_pool_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_pool_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_pool
+
+test_rados_api_stat_SOURCES = test/rados-api/stat.cc test/rados-api/test.cc
+test_rados_api_stat_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_stat_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_stat_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_stat
+
+test_rados_api_watch_notify_SOURCES = test/rados-api/watch_notify.cc test/rados-api/test.cc
+test_rados_api_watch_notify_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_watch_notify_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_watch_notify_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_watch_notify
+
+test_rados_api_snapshots_SOURCES = test/rados-api/snapshots.cc test/rados-api/test.cc
+test_rados_api_snapshots_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_snapshots_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_snapshots_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_snapshots
+
+test_rados_api_misc_SOURCES = test/rados-api/misc.cc test/rados-api/test.cc
+test_rados_api_misc_LDFLAGS = ${AM_LDFLAGS}
+test_rados_api_misc_LDADD =  librados.la ${UNITTEST_LDADD}
+test_rados_api_misc_CXXFLAGS = ${AM_CXXFLAGS} ${UNITTEST_CXXFLAGS}
+bin_DEBUGPROGRAMS += test_rados_api_misc
 
 # shell scripts
 editpaths = sed \
@@ -569,7 +659,8 @@ CLEANFILES += \
 
 ##
 
-AM_COMMON_FLAGS = -Wall -D__CEPH__ -D_FILE_OFFSET_BITS=64 -D_REENTRANT -D_THREAD_SAFE -rdynamic \
+AM_COMMON_FLAGS = -Wall -D__CEPH__ -D_FILE_OFFSET_BITS=64 -D_REENTRANT \
+-D_THREAD_SAFE -D__STDC_FORMAT_MACROS -rdynamic \
 ${WARN_TYPE_LIMITS} ${WARN_IGNORED_QUALIFIERS} -Winit-self -Wpointer-arith \
 -fno-strict-aliasing
 
@@ -612,6 +703,12 @@ sample.fetch_config: fetch_config
 
 shell_commondir = $(libdir)/ceph
 shell_common_SCRIPTS = ceph_common.sh
+
+bash_completiondir = $(sysconfdir)/bash_completion.d
+bash_completion_DATA = $(srcdir)/bash_completion/ceph \
+               $(srcdir)/bash_completion/rados \
+               $(srcdir)/bash_completion/rbd \
+               $(srcdir)/bash_completion/radosgw_admin
 
 libceph_includedir = $(includedir)/ceph
 libceph_include_DATA = $(srcdir)/include/ceph/libceph.h
@@ -659,6 +756,7 @@ clean-local:
 libcommon_la_SOURCES = $(libcommon_files)
 libcommon_la_CFLAGS= ${CRYPTO_CFLAGS} ${AM_CFLAGS}
 libcommon_la_CXXFLAGS= ${CRYPTO_CXXFLAGS} ${AM_CXXFLAGS}
+libcommon_la_LDFLAGS = -lrt
 noinst_LTLIBRARIES += libcommon.la
 
 libglobal_la_SOURCES = \
@@ -698,13 +796,13 @@ libcommon_files = \
 	common/perf_counters.cc \
 	common/admin_socket.cc \
 	common/admin_socket_client.cc \
+	common/escape.c \
 	common/Clock.cc \
 	common/Timer.cc \
 	common/Finisher.cc \
 	common/environment.cc\
 	common/sctp_crc32.c\
 	common/assert.cc \
-	common/dyn_snprintf.c \
         common/run_cmd.cc \
 	common/WorkQueue.cc \
 	common/ConfUtils.cc \
@@ -717,8 +815,10 @@ libcommon_files = \
 	mon/MonMap.cc \
 	mon/MonClient.cc \
 	osd/OSDMap.cc \
+	osd/osd_types.cc \
 	mds/MDSMap.cc \
 	common/common_init.cc \
+	common/pipe.c \
 	common/ceph_argparse.cc \
 	common/ceph_context.cc \
 	common/buffer.cc \
@@ -727,6 +827,7 @@ libcommon_files = \
 	common/simple_spin.cc \
 	common/Thread.cc \
 	common/Formatter.cc \
+	common/HeartbeatMap.cc \
 	include/ceph_fs.cc \
 	include/ceph_hash.cc \
 	include/ceph_strings.cc \
@@ -764,6 +865,7 @@ libmon_la_SOURCES = \
 	mon/MDSMonitor.cc \
 	mon/MonmapMonitor.cc \
 	mon/PGMonitor.cc \
+	mon/PGMap.cc \
 	mon/LogMonitor.cc \
 	mon/AuthMonitor.cc \
 	mon/Elector.cc \
@@ -828,6 +930,8 @@ noinst_LTLIBRARIES += libosdc.la
 
 libclient_la_SOURCES = \
 	client/Client.cc \
+	client/Inode.cc \
+	client/MetaRequest.cc \
 	client/Trace.cc
 libclient_la_LIBADD = libcommon.la
 noinst_LTLIBRARIES += libclient.la
@@ -863,7 +967,18 @@ noinst_HEADERS = \
 	auth/KeyRing.h\
 	auth/RotatingKeyRing.h\
 	auth/Crypto.h\
+	bash_completion/ceph\
+	bash_completion/rados\
+	bash_completion/rbd\
+	bash_completion/radosgw_admin\
         client/Client.h\
+	client/Dentry.h\
+	client/Dir.h\
+	client/Fh.h\
+	client/Inode.h\
+	client/MetaRequest.h\
+	client/MetaSession.h\
+	client/SnapRealm.h\
         client/SyntheticClient.h\
         client/Trace.h\
         client/fuse_ll.h\
@@ -873,6 +988,7 @@ noinst_HEADERS = \
 	cls_crypto.cc\
 	common/BackTrace.h\
 	common/DoutStreambuf.h\
+	common/HeartbeatMap.h\
 	common/LogClient.h\
 	common/LogEntry.h\
 	common/WorkQueue.h\
@@ -881,6 +997,7 @@ noinst_HEADERS = \
 	common/compiler_extensions.h\
 	common/debug.h\
 	common/dout.h\
+	common/escape.h\
 	common/version.h\
 	common/hex.h\
 	common/entity_name.h\
@@ -909,11 +1026,11 @@ noinst_HEADERS = \
 	global/global_init.h \
 	global/global_context.h \
         common/common_init.h\
+        common/pipe.h\
 	common/code_environment.h \
         common/signal.h\
         global/signal_handler.h\
         common/simple_spin.h\
-        common/dyn_snprintf.h\
         common/run_cmd.h\
 	common/safe_io.h\
         common/config.h\
@@ -1093,6 +1210,8 @@ noinst_HEADERS = \
         messages/MMonCommandAck.h\
         messages/MMonElection.h\
         messages/MMonGetMap.h\
+        messages/MMonGetVersion.h\
+        messages/MMonGetVersionReply.h\
 	messages/MMonGlobalID.h\
         messages/MMonMap.h\
         messages/MMonObserve.h\
@@ -1204,7 +1323,6 @@ noinst_HEADERS = \
 	rgw/rgw_rest_os.h\
 	rgw/rgw_rest_s3.h\
 	rgw/rgw_user.h\
-	rgw/rgw_escape.h\
 	sample.ceph.conf\
 	tools/common.h\
 	tools/gui.h\
@@ -1216,7 +1334,8 @@ noinst_HEADERS = \
 	test/system/st_rados_create_pool.h \
 	test/system/st_rados_list_objects.h \
 	test/system/systest_runnable.h \
-	test/system/systest_settings.h
+	test/system/systest_settings.h \
+	test/rados-api/test.h
 
 all_sources = $(cmon_SOURCES) $(ceph_SOURCES) $(cephfs_SOURCES) $(librados_config_SOURCES) $(cauthtool_SOURCES) $(monmaptool_SOURCES) \
 	$(crushtool_SOURCES) $(osdmaptool_SOURCES) $(cconf_SOURCES) $(mount_ceph_SOURCES) $(cmds_SOURCES) \
@@ -1267,3 +1386,11 @@ uninstall-local: uninstall-coverage
 if WITH_DEBUG
 bin_PROGRAMS += $(bin_DEBUGPROGRAMS)
 endif
+
+
+project.tgz: clean
+	cov-configure -co /usr/bin/gcc
+	cov-configure -co /usr/bin/g++
+	cov-build -e emit -o output make
+	tar czvf project.tgz README emit output
+

@@ -50,16 +50,16 @@ void MDLog::create_logger()
   snprintf(name, sizeof(name), "mds.%s.log", g_conf->name.get_id().c_str());
   PerfCountersBuilder plb(g_ceph_context, name, l_mdl_first, l_mdl_last);
 
-  plb.add_u64(l_mdl_evadd, "evadd");
-  plb.add_u64(l_mdl_evex, "evex");
-  plb.add_u64(l_mdl_evtrm, "evtrm");
+  plb.add_u64_counter(l_mdl_evadd, "evadd");
+  plb.add_u64_counter(l_mdl_evex, "evex");
+  plb.add_u64_counter(l_mdl_evtrm, "evtrm");
   plb.add_u64(l_mdl_ev, "ev");
   plb.add_u64(l_mdl_evexg, "evexg");
   plb.add_u64(l_mdl_evexd, "evexd");
 
-  plb.add_u64(l_mdl_segadd, "segadd");
-  plb.add_u64(l_mdl_segex, "segex");
-  plb.add_u64(l_mdl_segtrm, "segtrm");
+  plb.add_u64_counter(l_mdl_segadd, "segadd");
+  plb.add_u64_counter(l_mdl_segex, "segex");
+  plb.add_u64_counter(l_mdl_segtrm, "segtrm");
   plb.add_u64(l_mdl_seg, "seg");
   plb.add_u64(l_mdl_segexg, "segexg");
   plb.add_u64(l_mdl_segexd, "segexd");
@@ -212,9 +212,14 @@ void MDLog::submit_entry(LogEvent *le, Context *c)
 	     << ", cur pos = " << journaler->get_write_pos() << dendl;
     start_new_segment();
   } else if (g_conf->mds_debug_subtrees &&
+	     le->get_type() != EVENT_SUBTREEMAP_TEST &&
 	     le->get_type() != EVENT_SUBTREEMAP) {
-    // debug: journal this every time to catch subtree replay bugs
-    submit_entry(mds->mdcache->create_subtree_map());
+    // debug: journal this every time to catch subtree replay bugs.
+    // use a different event id so it doesn't get interpreted as a
+    // LogSegment boundary on replay.
+    LogEvent *le = mds->mdcache->create_subtree_map();
+    le->set_type(EVENT_SUBTREEMAP_TEST);
+    submit_entry(le);
   }
 
   delete le;
@@ -286,18 +291,20 @@ void MDLog::trim(int m)
 	   << ", " << expired_segments.size() << " (" << expired_events << ") expired"
 	   << dendl;
 
-  if (segments.empty()) return;
+  if (segments.empty())
+    return;
 
   // hack: only trim for a few seconds at a time
   utime_t stop = ceph_clock_now(g_ceph_context);
   stop += 2.0;
 
   map<uint64_t,LogSegment*>::iterator p = segments.begin();
-  int left = num_events;
   while (p != segments.end() && 
-	 ((max_events >= 0 && left-expiring_events-expired_events > max_events) ||
-	  (max_segments >= 0 && (int)(segments.size()-expiring_segments.size()-expired_segments.size()) > max_segments))) {
-
+	 ((max_events >= 0 &&
+	   num_events - expiring_events - expired_events > max_events) ||
+	  (max_segments >= 0 &&
+	   segments.size() - expiring_segments.size() - expired_segments.size() > (unsigned)max_segments))) {
+    
     if (stop < ceph_clock_now(g_ceph_context))
       break;
 
@@ -307,11 +314,8 @@ void MDLog::trim(int m)
     // look at first segment
     LogSegment *ls = p->second;
     assert(ls);
-
     p++;
     
-    left -= ls->num_events;
-
     if (expiring_segments.count(ls)) {
       dout(5) << "trim already expiring segment " << ls->offset << ", " << ls->num_events << " events" << dendl;
     } else if (expired_segments.count(ls)) {
@@ -320,6 +324,9 @@ void MDLog::trim(int m)
       try_expire(ls);
     }
   }
+
+  // discard expired segments
+  _trim_expired_segments();
 }
 
 
@@ -352,6 +359,39 @@ void MDLog::_maybe_expired(LogSegment *ls)
   try_expire(ls);
 }
 
+void MDLog::_trim_expired_segments()
+{
+  // trim expired segments?
+  bool trimmed = false;
+  while (!segments.empty()) {
+    LogSegment *ls = segments.begin()->second;
+    if (!expired_segments.count(ls)) {
+      dout(10) << "_trim_expired_segments waiting for " << ls->offset << " to expire" << dendl;
+      break;
+    }
+    
+    dout(10) << "_trim_expired_segments trimming expired " << ls->offset << dendl;
+    expired_events -= ls->num_events;
+    expired_segments.erase(ls);
+    num_events -= ls->num_events;
+      
+    // this was the oldest segment, adjust expire pos
+    if (journaler->get_expire_pos() < ls->offset)
+      journaler->set_expire_pos(ls->offset);
+    
+    logger->set(l_mdl_expos, ls->offset);
+    logger->inc(l_mdl_segtrm);
+    logger->inc(l_mdl_evtrm, ls->num_events);
+    
+    segments.erase(ls->offset);
+    delete ls;
+    trimmed = true;
+  }
+  
+  if (trimmed)
+    journaler->write_head(0);
+}
+
 void MDLog::_expired(LogSegment *ls)
 {
   dout(5) << "_expired segment " << ls->offset << " " << ls->num_events << " events" << dendl;
@@ -368,32 +408,6 @@ void MDLog::_expired(LogSegment *ls)
     
     logger->inc(l_mdl_evex, ls->num_events);
     logger->inc(l_mdl_segex);
-    
-    // trim expired segments?
-    while (!segments.empty()) {
-      ls = segments.begin()->second;
-      if (!expired_segments.count(ls)) {
-	dout(10) << "_expired  waiting for " << ls->offset << " to expire first" << dendl;
-	break;
-      }
-      
-      expired_events -= ls->num_events;
-      expired_segments.erase(ls);
-      num_events -= ls->num_events;
-      
-      // this was the oldest segment, adjust expire pos
-      if (journaler->get_expire_pos() < ls->offset)
-	journaler->set_expire_pos(ls->offset);
-      
-      logger->set(l_mdl_expos, ls->offset);
-      logger->inc(l_mdl_segtrm);
-      logger->inc(l_mdl_evtrm, ls->num_events);
-      
-      segments.erase(ls->offset);
-      delete ls;
-    }
-
-    journaler->write_head(0);
   }
 
   logger->set(l_mdl_ev, num_events);
@@ -431,6 +445,7 @@ void MDLog::replay(Context *c)
   already_replayed = true;
 
   replay_thread.create();
+  replay_thread.detach();
 }
 
 class C_MDL_Replay : public Context {

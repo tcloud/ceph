@@ -97,7 +97,8 @@ struct ceph_pg_pool {
 	__u8 object_hash;         /* hash mapping object name to ps */
 	__le32 pg_num, pgp_num;   /* number of pg's */
 	__le32 lpg_num, lpgp_num; /* number of localized pg's */
-	__le32 last_change;       /* most recent epoch changed */
+	__le32 last_change;       /* most recent epoch changed -- excludes
+	                             snapshot changes; use snap_epoch for that*/
 	__le64 snap_seq;          /* seq for per-pool snapshot */
 	__le32 snap_epoch;        /* epoch of last snap */
 	__le32 num_snaps;
@@ -224,6 +225,8 @@ enum {
 
 	/** multi **/
 	CEPH_OSD_OP_CLONERANGE = CEPH_OSD_OP_MODE_WR | CEPH_OSD_OP_TYPE_MULTI | 1,
+	CEPH_OSD_OP_ASSERT_SRC_VERSION = CEPH_OSD_OP_MODE_RD | CEPH_OSD_OP_TYPE_MULTI | 2,
+	CEPH_OSD_OP_SRC_CMPXATTR = CEPH_OSD_OP_MODE_RD | CEPH_OSD_OP_TYPE_MULTI | 3,
 
 	/** attrs **/
 	/* read */
@@ -339,6 +342,7 @@ enum {
 
 enum {
 	CEPH_OSD_OP_FLAG_EXCL = 1,      /* EXCL object create */
+	CEPH_OSD_OP_FLAG_FAILOK = 2,    /* continue despite failure */
 };
 
 #define EOLDSNAPC    ERESTART  /* ORDERSNAP flag set; writer has old snapc*/
@@ -401,7 +405,7 @@ struct ceph_osd_op {
 			__le64 offset, length;
 			__le64 src_offset;
 		} __attribute__ ((packed)) clonerange;
-};
+	};
 	__le32 payload_len;
 } __attribute__ ((packed));
 

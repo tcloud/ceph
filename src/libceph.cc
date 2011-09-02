@@ -19,6 +19,7 @@
 #include "common/common_init.h"
 #include "common/config.h"
 #include "common/version.h"
+#include "mon/MonClient.h"
 #include "include/str_list.h"
 #include "messages/MMonMap.h"
 #include "msg/SimpleMessenger.h"
@@ -135,17 +136,21 @@ public:
     int ret = cct->_conf->parse_config_files(path_list, &parse_errors, 0);
     if (ret)
       return ret;
-    cct->_conf->apply_changes();
+    cct->_conf->apply_changes(NULL);
     complain_about_parse_errors(cct, &parse_errors);
     return 0;
   }
 
-  void conf_parse_argv(int argc, const char **argv)
+  int conf_parse_argv(int argc, const char **argv)
   {
+    int ret;
     vector<const char*> args;
     argv_to_vec(argc, argv, args);
-    cct->_conf->parse_argv(args);
-    cct->_conf->apply_changes();
+    ret = cct->_conf->parse_argv(args);
+    if (ret)
+	return ret;
+    cct->_conf->apply_changes(NULL);
+    return 0;
   }
 
   int conf_set(const char *option, const char *value)
@@ -153,7 +158,7 @@ public:
     int ret = cct->_conf->set_val(option, value);
     if (ret)
       return ret;
-    cct->_conf->apply_changes();
+    cct->_conf->apply_changes(NULL);
     return 0;
   }
 
@@ -222,7 +227,7 @@ extern "C" int ceph_create(struct ceph_mount_info **cmount, const char * const i
 
   CephContext *cct = common_preinit(iparams, CODE_ENVIRONMENT_LIBRARY, 0);
   cct->_conf->parse_env(); // environment variables coverride
-  cct->_conf->apply_changes();
+  cct->_conf->apply_changes(NULL);
   return ceph_create_with_context(cmount, cct);
 }
 
@@ -236,10 +241,10 @@ extern "C" int ceph_conf_read_file(struct ceph_mount_info *cmount, const char *p
   return cmount->conf_read_file(path);
 }
 
-extern "C" void ceph_conf_parse_argv(struct ceph_mount_info *cmount, int argc,
+extern "C" int ceph_conf_parse_argv(struct ceph_mount_info *cmount, int argc,
 				     const char **argv)
 {
-  cmount->conf_parse_argv(argc, argv);
+  return cmount->conf_parse_argv(argc, argv);
 }
 
 extern "C" int ceph_conf_set(struct ceph_mount_info *cmount, const char *option,

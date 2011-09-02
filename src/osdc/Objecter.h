@@ -51,6 +51,15 @@ struct ObjectOperation {
 
   ObjectOperation() : flags(0), priority(0) {}
 
+  size_t size() {
+    return ops.size();
+  }
+
+  void set_last_op_flags(int flags) {
+    assert(!ops.empty());
+    ops.rbegin()->op.flags = flags;
+  }
+
   OSDOp& add_op(int op) {
     int s = ops.size();
     ops.resize(s+1);
@@ -80,6 +89,18 @@ struct ObjectOperation {
     ops[s].op.op = op;
     ops[s].op.xattr.name_len = (name ? strlen(name) : 0);
     ops[s].op.xattr.value_len = data.length();
+    if (name)
+      ops[s].data.append(name);
+    ops[s].data.append(data);
+  }
+  void add_xattr_cmp(int op, const char *name, uint8_t cmp_op, uint8_t cmp_mode, const bufferlist& data) {
+    int s = ops.size();
+    ops.resize(s+1);
+    ops[s].op.op = op;
+    ops[s].op.xattr.name_len = (name ? strlen(name) : 0);
+    ops[s].op.xattr.value_len = data.length();
+    ops[s].op.xattr.cmp_op = cmp_op;
+    ops[s].op.xattr.cmp_mode = cmp_mode;
     if (name)
       ops[s].data.append(name);
     ops[s].data.append(data);
@@ -141,6 +162,11 @@ struct ObjectOperation {
     OSDOp& o = add_op(CEPH_OSD_OP_CREATE);
     o.op.flags = (excl ? CEPH_OSD_OP_FLAG_EXCL : 0);
   }
+  void create(bool excl, const string& category) {
+    OSDOp& o = add_op(CEPH_OSD_OP_CREATE);
+    o.op.flags = (excl ? CEPH_OSD_OP_FLAG_EXCL : 0);
+    ::encode(category, o.data);
+  }
 
   // object data
   void read(uint64_t off, uint64_t len) {
@@ -198,6 +224,9 @@ struct ObjectOperation {
     bl.append(s);
     add_xattr(CEPH_OSD_OP_SETXATTR, name, bl);
   }
+  void cmpxattr(const char *name, uint8_t cmp_op, uint8_t cmp_mode, const bufferlist& bl) {
+    add_xattr_cmp(CEPH_OSD_OP_CMPXATTR, name, cmp_op, cmp_mode, bl);
+  }
   void rmxattr(const char *name) {
     bufferlist bl;
     add_xattr(CEPH_OSD_OP_RMXATTR, name, bl);
@@ -248,6 +277,29 @@ struct ObjectOperation {
     bufferlist bl;
     add_watch(CEPH_OSD_OP_ASSERT_VER, 0, ver, 0, bl);
   }
+  void assert_src_version(const object_t& srcoid, snapid_t srcsnapid, uint64_t ver) {
+    bufferlist bl;
+    add_watch(CEPH_OSD_OP_ASSERT_SRC_VERSION, 0, ver, 0, bl);
+    ops.rbegin()->soid = sobject_t(srcoid, srcsnapid);
+  }
+
+  void cmpxattr(const char *name, const bufferlist& val,
+		int op, int mode) {
+    add_xattr(CEPH_OSD_OP_CMPXATTR, name, val);
+    OSDOp& o = *ops.rbegin();
+    o.op.xattr.cmp_op = op;
+    o.op.xattr.cmp_mode = mode;
+  }
+  void src_cmpxattr(const object_t& srcoid, snapid_t srcsnapid,
+		    const char *name, const bufferlist& val,
+		    int op, int mode) {
+    add_xattr(CEPH_OSD_OP_SRC_CMPXATTR, name, val);
+    OSDOp& o = *ops.rbegin();
+    o.soid = sobject_t(srcoid, srcsnapid);
+    o.op.xattr.cmp_op = op;
+    o.op.xattr.cmp_mode = mode;
+  }
+
 };
 
 
@@ -271,7 +323,7 @@ class Objecter {
   bool keep_balanced_budget;
   bool honor_osdmap_full;
 
-  void maybe_request_map();
+  void maybe_request_map(epoch_t epoch=0);
 
   version_t last_seen_osdmap_version;
   version_t last_seen_pgmap_version;
@@ -344,6 +396,13 @@ public:
     bool operator<(const Op& other) const {
       return tid < other.tid;
     }
+  };
+
+  struct C_Op_Map_Latest : public Context {
+    Objecter *objecter;
+    tid_t tid;
+    C_Op_Map_Latest(Objecter *o, tid_t t) : objecter(o), tid(t) {}
+    void finish(int r);
   };
 
   struct C_Stat : public Context {
@@ -512,6 +571,13 @@ public:
     }
   };
 
+  struct C_Linger_Map_Latest : public Context {
+    Objecter *objecter;
+    uint64_t linger_id;
+    C_Linger_Map_Latest(Objecter *o, uint64_t id) :
+      objecter(o), linger_id(id) {}
+    void finish(int r);
+  };
 
   // -- osd sessions --
   struct OSDSession {
@@ -535,6 +601,11 @@ public:
   map<tid_t,StatfsOp*>      statfs_ops;
   map<tid_t,PoolOp*>        pool_ops;
 
+  // ops waiting for an osdmap with a new pool or confirmation that
+  // the pool does not exist (may be expanded to other uses later)
+  map<uint64_t, LingerOp*>  check_latest_map_lingers;
+  map<tid_t, Op*>           check_latest_map_ops;
+
   map<epoch_t,list< pair<Context*, int> > > waiting_for_map;
 
   void send_op(Op *op);
@@ -542,7 +613,7 @@ public:
   enum recalc_op_target_result {
     RECALC_OP_TARGET_NO_ACTION = 0,
     RECALC_OP_TARGET_NEED_RESEND,
-    RECALC_OP_TARGET_POOL_DISAPPEARED,
+    RECALC_OP_TARGET_POOL_DNE,
   };
   int recalc_op_target(Op *op);
   bool recalc_linger_op_target(LingerOp *op);
@@ -550,6 +621,11 @@ public:
   void send_linger(LingerOp *info);
   void _linger_ack(LingerOp *info, int r);
   void _linger_commit(LingerOp *info, int r);
+
+  void op_check_for_latest_map(Op *op);
+  void op_cancel_map_check(Op *op);
+  void linger_check_for_latest_map(LingerOp *op);
+  void linger_cancel_map_check(LingerOp *op);
 
   void kick_requests(OSDSession *session);
 
@@ -636,7 +712,7 @@ private:
   void set_client_incarnation(int inc) { client_inc = inc; }
 
   void wait_for_new_map(Context *c, epoch_t epoch, int replyCode=0) {
-    maybe_request_map();
+    maybe_request_map(epoch);
     waiting_for_map[epoch].push_back(pair<Context *, int>(c, replyCode));
   }
 

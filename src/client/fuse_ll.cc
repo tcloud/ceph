@@ -321,6 +321,10 @@ static void ceph_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
   int r = client->ll_open(fino_vino(ino), fi->flags, &fh, ctx->uid, ctx->gid);
   if (r == 0) {
     fi->fh = (long)fh;
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
+    if (g_conf->fuse_use_invalidate_cb)
+      fi->keep_cache = 1;
+#endif
     fuse_reply_open(req, fi);
   } else {
     fuse_reply_err(req, -r);
@@ -387,7 +391,7 @@ static int ceph_ll_add_dirent(void *p, struct dirent *de, struct stat *st, int s
   struct readdir_context *c = (struct readdir_context *)p;
 
   st->st_ino = make_fake_ino(de->d_ino, c->snap);
-  st->st_mode = DT_TO_MODE(de->d_type);
+  st->st_mode = DTTOIF(de->d_type);
   st->st_rdev = new_encode_dev(st->st_rdev);
 
   size_t room = c->size - c->pos;
@@ -458,6 +462,16 @@ static void ceph_ll_statfs(fuse_req_t req, fuse_ino_t ino)
     fuse_reply_statfs(req, &stbuf);
   else
     fuse_reply_err(req, -r);
+}
+
+
+static void invalidate_cb(void *handle, vinodeno_t vino, int64_t off, int64_t len)
+{
+  struct fuse_chan *ch = (struct fuse_chan *)handle;
+  fuse_ino_t fino = make_fake_ino(vino.ino, vino.snapid);
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
+  fuse_lowlevel_notify_inval_inode(ch, fino, off, len);
+#endif
 }
 
 int fd_on_success = 0;
@@ -542,9 +556,16 @@ int ceph_fuse_ll_main(Client *c, int argc, const char *argv[], int fd)
   newargv[newargc++] = "-o";
   newargv[newargc++] = "default_permissions";
 
+  newargv[newargc++] = "-o";
+  newargv[newargc++] = "big_writes";
+
+  newargv[newargc++] = "-o";
+  newargv[newargc++] = "atomic_o_trunc";
+
   //newargv[newargc++] = "-d";
 
-  for (int argctr = 1; argctr < argc; argctr++) newargv[newargc++] = argv[argctr];
+  for (int argctr = 1; argctr < argc; argctr++)
+    newargv[newargc++] = argv[argctr];
 
   // go go gadget fuse
   struct fuse_args args = FUSE_ARGS_INIT(newargc, (char**)newargv);
@@ -582,7 +603,14 @@ int ceph_fuse_ll_main(Client *c, int argc, const char *argv[], int fd)
   }
 
   fuse_session_add_chan(se, ch);
+
+  if (g_conf->fuse_use_invalidate_cb)
+    client->ll_register_ino_invalidate_cb(invalidate_cb, ch);
+
   ret = fuse_session_loop(se);
+
+  client->ll_register_ino_invalidate_cb(NULL, NULL);
+
   fuse_remove_signal_handlers(se);
   fuse_session_remove_chan(ch);
 

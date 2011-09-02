@@ -248,10 +248,12 @@ private:
   epoch_t heartbeat_epoch;
   map<int, epoch_t> heartbeat_to, heartbeat_from;
   map<int, utime_t> heartbeat_from_stamp;
-  map<int, Connection*> heartbeat_con;
+  map<int, Connection*> heartbeat_to_con, heartbeat_from_con;
   utime_t last_mon_heartbeat;
-  Messenger *heartbeat_messenger;
+  Messenger *hbin_messenger, *hbout_messenger;
   
+  void _add_heartbeat_source(int p, map<int, epoch_t>& old_from, map<int, utime_t>& old_from_stamp,
+			     map<int,Connection*>& old_con);
   void update_heartbeat_peers();
   void reset_heartbeat_peers();
   void heartbeat();
@@ -315,7 +317,8 @@ private:
   
   struct OpWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    OpWQ(OSD *o, ThreadPool *tp) : ThreadPool::WorkQueue<PG>("OSD::OpWQ", tp), osd(o) {}
+    OpWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::OpWQ", ti, tp), osd(o) {}
 
     bool _enqueue(PG *pg) {
       pg->get();
@@ -429,7 +432,8 @@ protected:
   PG   *_lookup_lock_pg(pg_t pgid);
   PG   *_open_lock_pg(pg_t pg, bool no_lockdep_check=false);  // create new PG (in memory)
   PG   *_create_lock_pg(pg_t pg, ObjectStore::Transaction& t); // create new PG
-  PG   *_create_lock_new_pg(pg_t pgid, vector<int>& acting, ObjectStore::Transaction& t);
+  PG   *_create_lock_new_pg(pg_t pgid, vector<int>& acting, ObjectStore::Transaction& t,
+                            PG::Info::History history);
   //void  _remove_unlock_pg(PG *pg);         // remove from store and memory
 
   PG *lookup_lock_pg(pg_t pgid);
@@ -461,7 +465,7 @@ protected:
 
   // -- pg creation --
   struct create_pg_info {
-    epoch_t created;
+    PG::Info::History history;
     vector<int> acting;
     set<int> prior;
     pg_t parent;
@@ -591,7 +595,8 @@ protected:
 
   struct BacklogWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    BacklogWQ(OSD *o, ThreadPool *tp) : ThreadPool::WorkQueue<PG>("OSD::BacklogWQ", tp), osd(o) {}
+    BacklogWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::BacklogWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return osd->backlog_queue.empty();
@@ -642,7 +647,8 @@ protected:
 
   struct RecoveryWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    RecoveryWQ(OSD *o, ThreadPool *tp) : ThreadPool::WorkQueue<PG>("OSD::RecoveryWQ", tp), osd(o) {}
+    RecoveryWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::RecoveryWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return osd->recovery_queue.empty();
@@ -716,7 +722,8 @@ protected:
   
   struct SnapTrimWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    SnapTrimWQ(OSD *o, ThreadPool *tp) : ThreadPool::WorkQueue<PG>("OSD::SnapTrimWQ", tp), osd(o) {}
+    SnapTrimWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::SnapTrimWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return osd->snap_trim_queue.empty();
@@ -775,7 +782,8 @@ protected:
 
   struct ScrubWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    ScrubWQ(OSD *o, ThreadPool *tp) : ThreadPool::WorkQueue<PG>("OSD::ScrubWQ", tp), osd(o) {}
+    ScrubWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::ScrubWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return osd->scrub_queue.empty();
@@ -818,8 +826,8 @@ protected:
     xlist<PG*> scrub_finalize_queue;
 
   public:
-    ScrubFinalizeWQ(OSD *o, ThreadPool *tp) : 
-      ThreadPool::WorkQueue<PG>("OSD::ScrubFinalizeWQ", tp), osd(o) {}
+    ScrubFinalizeWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::ScrubFinalizeWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return scrub_finalize_queue.empty();
@@ -863,8 +871,8 @@ protected:
     list<MOSDRepScrub*> rep_scrub_queue;
 
   public:
-    RepScrubWQ(OSD *o, ThreadPool *tp) : 
-      ThreadPool::WorkQueue<MOSDRepScrub>("OSD::RepScrubWQ", tp), osd(o) {}
+    RepScrubWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<MOSDRepScrub>("OSD::RepScrubWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return rep_scrub_queue.empty();
@@ -910,7 +918,8 @@ protected:
 
   struct RemoveWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    RemoveWQ(OSD *o, ThreadPool *tp) : ThreadPool::WorkQueue<PG>("OSD::RemoveWQ", tp), osd(o) {}
+    RemoveWQ(OSD *o, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::RemoveWQ", ti, tp), osd(o) {}
 
     bool _empty() {
       return osd->remove_queue.empty();
@@ -958,8 +967,8 @@ protected:
  public:
   /* internal and external can point to the same messenger, they will still
    * be cleaned up properly*/
-  OSD(int id, Messenger *internal, Messenger *external, Messenger *hbm, MonClient *mc,
-      const std::string &dev, const std::string &jdev);
+  OSD(int id, Messenger *internal, Messenger *external, Messenger *hbmin, Messenger *hbmout,
+      MonClient *mc, const std::string &dev, const std::string &jdev);
   ~OSD();
 
   // static bits

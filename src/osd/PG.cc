@@ -1540,6 +1540,7 @@ void PG::activate(ObjectStore::Transaction& t, list<Context*>& tfin,
   clean_up_local(t); 
 
   // find out when we commit
+  get();   // for callback
   tfin.push_back(new C_PG_ActivateCommitted(this, info.history.same_acting_since));
   
   // initialize snap_trimq
@@ -1714,10 +1715,6 @@ void PG::_activate_committed(epoch_t e)
 {
   osd->map_lock.get_read();
   lock();
-  epoch_t cur_epoch = osd->osdmap->get_epoch();
-  entity_inst_t primary = osd->osdmap->get_cluster_inst(acting[0]);
-  osd->map_lock.put_read();
-
   if (e < last_warm_restart) {
     dout(10) << "_activate_committed " << e << ", that was an old interval" << dendl;
   } else if (is_primary()) {
@@ -1729,13 +1726,17 @@ void PG::_activate_committed(epoch_t e)
       all_activated_and_committed();
   } else {
     dout(10) << "_activate_committed " << e << " telling primary" << dendl;
+    epoch_t cur_epoch = osd->osdmap->get_epoch();
+    entity_inst_t primary = osd->osdmap->get_cluster_inst(acting[0]);
     MOSDPGInfo *m = new MOSDPGInfo(cur_epoch);
     PG::Info i = info;
     i.history.last_epoch_started = e;
     m->pg_info.push_back(i);
     osd->cluster_messenger->send_message(m, primary);
   }
+  osd->map_lock.put_read();
   unlock();
+  put();
 }
 
 /*
@@ -1952,23 +1953,18 @@ void PG::update_stats()
     pg_stats_stable.log_start = log.tail;
     pg_stats_stable.ondisk_log_start = log.tail;
 
-    pg_stats_stable.num_object_copies = pg_stats_stable.num_objects * osd->osdmap->get_pg_size(info.pgid);
+    pg_stats_stable.stats.calc_copies_degraded(osd->osdmap->get_pg_size(info.pgid), acting.size());
 
-    if (is_degraded())
-      pg_stats_stable.num_objects_degraded =
-	pg_stats_stable.num_objects * (osd->osdmap->get_pg_size(info.pgid) - acting.size());
-    else
-      pg_stats_stable.num_objects_degraded = 0;
     if (!is_clean() && is_active()) {
-      pg_stats_stable.num_objects_missing_on_primary = missing.num_missing();
+      pg_stats_stable.stats.sum.num_objects_missing_on_primary = missing.num_missing();
       int degraded = missing.num_missing();
       for (unsigned i=1; i<acting.size(); i++) {
 	assert(peer_missing.count(acting[i]));
 	degraded += peer_missing[acting[i]].num_missing();
       }
-      pg_stats_stable.num_objects_degraded += degraded;
+      pg_stats_stable.stats.sum.num_objects_degraded += degraded;
 
-      pg_stats_stable.num_objects_unfound = get_num_unfound();
+      pg_stats_stable.stats.sum.num_objects_unfound = get_num_unfound();
     }
 
     dout(15) << "update_stats " << pg_stats_stable.reported << dendl;
@@ -2672,6 +2668,7 @@ void PG::_scan_list(ScrubMap &map, vector<sobject_t> &ls)
     if (r == 0) {
       ScrubMap::object &o = map.objects[poid];
       o.size = st.st_size;
+      assert(!o.negative);
       osd->store->getattrs(coll, poid, o.attrs);
       dout(25) << "_scan_list  " << poid << dendl;
     } else {
@@ -2876,7 +2873,7 @@ void PG::build_inc_scrub_map(ScrubMap &map, eversion_t v)
       ls.push_back(p->soid);
     } else if (p->is_delete()) {
       map.objects[p->soid];
-      map.objects[p->soid].negative = 1;
+      map.objects[p->soid].negative = true;
     }
   }
 
@@ -3505,6 +3502,11 @@ bool PG::old_peering_msg(const epoch_t &msg_epoch)
   return (last_warm_restart > msg_epoch);
 }
 
+void PG::reset_last_warm_restart() {
+  const OSDMap &osdmap = *osd->osdmap;
+  last_warm_restart = osdmap.get_epoch();
+}
+
 /* Called before initializing peering during advance_map */
 void PG::warm_restart(const OSDMap& lastmap, const vector<int>& newup, const vector<int>& newacting)
 {
@@ -3513,7 +3515,7 @@ void PG::warm_restart(const OSDMap& lastmap, const vector<int>& newup, const vec
   // -- there was a change! --
   kick();
 
-  last_warm_restart = osdmap.get_epoch();
+  reset_last_warm_restart();
 
   vector<int> oldacting, oldup;
   int oldrole = get_role();
@@ -3921,6 +3923,8 @@ PG::RecoveryState::Initial::react(const MLogRec& i) {
 }
 
 void PG::RecoveryState::Initial::exit() {
+  PG *pg = context< RecoveryMachine >().pg;
+  pg->reset_last_warm_restart();
   context< RecoveryMachine >().log_exit(state_name, enter_time);
 }
 

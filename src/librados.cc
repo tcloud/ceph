@@ -84,6 +84,7 @@ struct librados::IoCtxImpl {
   snapid_t snap_seq;
   ::SnapContext snapc;
   uint64_t assert_ver;
+  map<object_t, uint64_t> assert_src_version;
   eversion_t last_objver;
   uint32_t notify_timeout;
   object_locator_t oloc;
@@ -104,6 +105,7 @@ struct librados::IoCtxImpl {
     snap_seq = rhs.snap_seq;
     snapc = rhs.snapc;
     assert_ver = rhs.assert_ver;
+    assert_src_version = rhs.assert_src_version;
     last_objver = rhs.last_objver;
     notify_timeout = rhs.notify_timeout;
     oloc = rhs.oloc;
@@ -130,79 +132,157 @@ struct librados::IoCtxImpl {
   }
 };
 
+size_t librados::ObjectOperation::size()
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  return o->size();
+}
 
-void librados::ObjectOperation::create(bool exclusive)
+void librados::ObjectOperation::set_op_flags(ObjectOperationFlags flags)
+{
+  int rados_flags = 0;
+  if (flags & OP_EXCL)
+    rados_flags |= CEPH_OSD_OP_FLAG_EXCL;
+  if (flags & OP_FAILOK)
+    rados_flags |= CEPH_OSD_OP_FLAG_FAILOK;
+
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->set_last_op_flags(rados_flags);
+}
+
+void librados::ObjectOperation::cmpxattr(const char *name, uint8_t op, const bufferlist& v)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->cmpxattr(name, op, CEPH_OSD_CMPXATTR_MODE_STRING, v);
+}
+
+void librados::ObjectOperation::cmpxattr(const char *name, uint8_t op, uint64_t v)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  bufferlist bl;
+  ::encode(v, bl);
+  o->cmpxattr(name, op, CEPH_OSD_CMPXATTR_MODE_U64, bl);
+}
+
+void librados::ObjectOperation::src_cmpxattr(const std::string& src_oid,
+					 const char *name, int op, const bufferlist& v)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  object_t oid(src_oid);
+  o->src_cmpxattr(oid, CEPH_NOSNAP, name, v, op, CEPH_OSD_CMPXATTR_MODE_STRING);
+}
+
+void librados::ObjectOperation::src_cmpxattr(const std::string& src_oid,
+					 const char *name, int op, uint64_t val)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  object_t oid(src_oid);
+  bufferlist bl;
+  ::encode(val, bl);
+  o->src_cmpxattr(oid, CEPH_NOSNAP, name, bl, op, CEPH_OSD_CMPXATTR_MODE_U64);
+}
+
+void librados::ObjectReadOperation::stat()
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->add_op(CEPH_OSD_OP_STAT);
+}
+
+void librados::ObjectReadOperation::read(size_t off, uint64_t len)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->read(off, len);
+}
+
+void librados::ObjectReadOperation::getxattr(const char *name)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->getxattr(name);
+}
+
+void librados::ObjectReadOperation::getxattrs()
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->getxattrs();
+}
+
+void librados::ObjectWriteOperation::create(bool exclusive)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->create(exclusive);
 }
 
-void librados::ObjectOperation::write(uint64_t off, const bufferlist& bl)
+void librados::ObjectWriteOperation::create(bool exclusive, const std::string& category)
+{
+  ::ObjectOperation *o = (::ObjectOperation *)impl;
+  o->create(exclusive, category);
+}
+
+void librados::ObjectWriteOperation::write(uint64_t off, const bufferlist& bl)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   bufferlist c = bl;
   o->write(off, c);
 }
 
-void librados::ObjectOperation::write_full(const bufferlist& bl)
+void librados::ObjectWriteOperation::write_full(const bufferlist& bl)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   bufferlist c = bl;
   o->write_full(c);
 }
 
-void librados::ObjectOperation::append(const bufferlist& bl)
+void librados::ObjectWriteOperation::append(const bufferlist& bl)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   bufferlist c = bl;
   o->append(c);
 }
 
-void librados::ObjectOperation::remove()
+void librados::ObjectWriteOperation::remove()
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->remove();
 }
 
-void librados::ObjectOperation::truncate(uint64_t off)
+void librados::ObjectWriteOperation::truncate(uint64_t off)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->truncate(off);
 }
 
-void librados::ObjectOperation::zero(uint64_t off, uint64_t len)
+void librados::ObjectWriteOperation::zero(uint64_t off, uint64_t len)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->zero(off, len);
 }
 
-void librados::ObjectOperation::rmxattr(const char *name)
+void librados::ObjectWriteOperation::rmxattr(const char *name)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->rmxattr(name);
 }
 
-void librados::ObjectOperation::setxattr(const char *name, const bufferlist& v)
+void librados::ObjectWriteOperation::setxattr(const char *name, const bufferlist& v)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->setxattr(name, v);
 }
 
-void librados::ObjectOperation::tmap_update(const bufferlist& cmdbl)
+void librados::ObjectWriteOperation::tmap_update(const bufferlist& cmdbl)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   bufferlist c = cmdbl;
   o->tmap_update(c);
 }
 
-void librados::ObjectOperation::clone_range(uint64_t dst_off,
+void librados::ObjectWriteOperation::clone_range(uint64_t dst_off,
                      const std::string& src_oid, uint64_t src_off,
                      size_t len)
 {
   ::ObjectOperation *o = (::ObjectOperation *)impl;
   o->clone_range(src_oid, src_off, len, dst_off);
 }
-
 
 librados::WatchCtx::
 ~WatchCtx()
@@ -483,6 +563,8 @@ public:
     return osdmap.get_pool_name(poolid_);
   }
 
+  ::ObjectOperation *prepare_assert_ops(IoCtxImpl *io, ::ObjectOperation *op);
+
   // snaps
   int snap_list(IoCtxImpl *io, vector<uint64_t> *snaps);
   int snap_lookup(IoCtxImpl *io, const char *name, uint64_t *snapid);
@@ -498,6 +580,7 @@ public:
 
   // io
   int create(IoCtxImpl& io, const object_t& oid, bool exclusive);
+  int create(IoCtxImpl& io, const object_t& oid, bool exclusive, const std::string& category);
   int write(IoCtxImpl& io, const object_t& oid, bufferlist& bl, size_t len, uint64_t off);
   int append(IoCtxImpl& io, const object_t& oid, bufferlist& bl, size_t len);
   int write_full(IoCtxImpl& io, const object_t& oid, bufferlist& bl);
@@ -512,6 +595,9 @@ public:
   int trunc(IoCtxImpl& io, const object_t& oid, uint64_t size);
 
   int tmap_update(IoCtxImpl& io, const object_t& oid, bufferlist& cmdbl);
+  int tmap_put(IoCtxImpl& io, const object_t& oid, bufferlist& bl);
+  int tmap_get(IoCtxImpl& io, const object_t& oid, bufferlist& bl);
+
   int exec(IoCtxImpl& io, const object_t& oid, const char *cls, const char *method, bufferlist& inbl, bufferlist& outbl);
 
   int getxattr(IoCtxImpl& io, const object_t& oid, const char *name, bufferlist& bl);
@@ -534,8 +620,9 @@ public:
 
   int list(Objecter::ListContext *context, int max_entries);
 
-  int operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, bufferlist *pbl);
-  int aio_operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, AioCompletionImpl *c, bufferlist *pbl);
+  int operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, time_t *pmtime);
+  int operate_read(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, bufferlist *pbl);
+  int aio_operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, AioCompletionImpl *c);
 
   struct C_aio_Ack : public Context {
     AioCompletionImpl *c;
@@ -767,6 +854,9 @@ public:
   }
   void set_assert_version(IoCtxImpl& io, uint64_t ver) {
     io.assert_ver = ver;
+  }
+  void set_assert_src_version(IoCtxImpl& io, const object_t& oid, uint64_t ver) {
+    io.assert_src_version[oid] = ver;
   }
 
   void set_notify_timeout(IoCtxImpl& io, uint32_t timeout) {
@@ -1409,6 +1499,66 @@ create(IoCtxImpl& io, const object_t& oid, bool exclusive)
   return r;
 }
 
+int librados::RadosClient::create(IoCtxImpl& io, const object_t& oid, bool exclusive, const std::string& category)
+{
+  utime_t ut = ceph_clock_now(cct);
+
+  /* can't write to a snapshot */
+  if (io.snap_seq != CEPH_NOSNAP)
+    return -EROFS;
+
+  Mutex mylock("RadosClient::create::mylock");
+  Cond cond;
+  bool done;
+  int r;
+  eversion_t ver;
+
+  Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
+
+  ::ObjectOperation o;
+  o.create(exclusive ? CEPH_OSD_OP_FLAG_EXCL : 0, category);
+
+  lock.Lock();
+  objecter->mutate(oid, io.oloc, o, io.snapc, ut, 0, onack, NULL, &ver);
+  lock.Unlock();
+
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
+
+  set_sync_op_version(io, ver);
+
+  return r;
+}
+
+/*
+ * add any version assert operations that are appropriate given the
+ * stat in the IoCtx, either the target version assert or any src
+ * object asserts.  these affect a single ioctx operation, so clear
+ * the ioctx state when we're doing.
+ *
+ * return a pointer to the ObjectOperation if we added any events;
+ * this is convenient for passing the extra_ops argument into Objecter
+ * methods.
+ */
+::ObjectOperation *librados::RadosClient::prepare_assert_ops(IoCtxImpl *io, ::ObjectOperation *op)
+{
+  ::ObjectOperation *pop = NULL;
+  if (io->assert_ver) {
+    op->assert_version(io->assert_ver);
+    io->assert_ver = 0;
+    pop = op;
+  }
+  while (!io->assert_src_version.empty()) {
+    map<object_t,uint64_t>::iterator p = io->assert_src_version.begin();
+    op->assert_src_version(p->first, CEPH_NOSNAP, p->second);
+    io->assert_src_version.erase(p);
+    pop = op;
+  }
+  return pop;
+}
+
 int librados::RadosClient::
 write(IoCtxImpl& io, const object_t& oid, bufferlist& bl, size_t len, uint64_t off)
 {
@@ -1426,13 +1576,10 @@ write(IoCtxImpl& io, const object_t& oid, bufferlist& bl, size_t len, uint64_t o
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
-
+  // extra ops?
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+  
   lock.Lock();
   objecter->write(oid, io.oloc,
 		  off, len, io.snapc, bl, ut, 0,
@@ -1469,12 +1616,8 @@ append(IoCtxImpl& io, const object_t& oid, bufferlist& bl, size_t len)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
 
   lock.Lock();
   objecter->append(oid, io.oloc,
@@ -1512,12 +1655,9 @@ write_full(IoCtxImpl& io, const object_t& oid, bufferlist& bl)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
 
   eversion_t ver;
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
 
   lock.Lock();
   objecter->write_full(oid, io.oloc,
@@ -1556,10 +1696,7 @@ clone_range(IoCtxImpl& io, const object_t& dst_oid, uint64_t dst_offset, const o
   lock.Lock();
   ::SnapContext snapc;
   ::ObjectOperation wr;
-  if (io.assert_ver) {
-    wr.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  prepare_assert_ops(&io, &wr);
   wr.clone_range(src_oid, src_offset, len, dst_offset);
   objecter->mutate(dst_oid, io.oloc, wr, snapc, ut, 0, onack, NULL, &ver);
   lock.Unlock();
@@ -1575,13 +1712,21 @@ clone_range(IoCtxImpl& io, const object_t& dst_oid, uint64_t dst_offset, const o
 }
 
 int librados::RadosClient::
-operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, bufferlist *pbl)
+operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, time_t *pmtime)
 {
-  utime_t ut = ceph_clock_now(cct);
+  utime_t ut;
+  if (pmtime) {
+    ut = utime_t(*pmtime, 0);
+  } else {
+    ut = ceph_clock_now(cct);
+  }
 
   /* can't write to a snapshot */
   if (io.snap_seq != CEPH_NOSNAP)
     return -EINVAL;
+
+  if (!o->size())
+    return 0;
 
   Mutex mylock("RadosClient::mutate::mylock");
   Cond cond;
@@ -1608,8 +1753,43 @@ operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, bufferlist *pb
 }
 
 int librados::RadosClient::
-aio_operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, AioCompletionImpl *c,
-	    bufferlist *pbl)
+operate_read(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, bufferlist *pbl)
+{
+  utime_t ut = ceph_clock_now(cct);
+
+  /* can't write to a snapshot */
+  if (io.snap_seq != CEPH_NOSNAP)
+    return -EINVAL;
+
+  if (!o->size())
+    return 0;
+
+  Mutex mylock("RadosClient::mutate::mylock");
+  Cond cond;
+  bool done;
+  int r;
+  eversion_t ver;
+
+  Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
+
+  lock.Lock();
+  objecter->read(oid, io.oloc,
+	           *o, io.snap_seq, pbl, 0,
+	           onack, &ver);
+  lock.Unlock();
+
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
+
+  set_sync_op_version(io, ver);
+
+  return r;
+}
+
+int librados::RadosClient::
+aio_operate(IoCtxImpl& io, const object_t& oid, ::ObjectOperation *o, AioCompletionImpl *c)
 {
   utime_t ut = ceph_clock_now(cct);
   Context *onack = new C_aio_Ack(c);
@@ -1765,12 +1945,8 @@ remove(IoCtxImpl& io, const object_t& oid)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
 
   lock.Lock();
   objecter->remove(oid, io.oloc,
@@ -1805,12 +1981,8 @@ trunc(IoCtxImpl& io, const object_t& oid, uint64_t size)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
 
   lock.Lock();
   objecter->trunc(oid, io.oloc,
@@ -1829,8 +2001,7 @@ trunc(IoCtxImpl& io, const object_t& oid, uint64_t size)
   return r;
 }
 
-int librados::RadosClient::
-tmap_update(IoCtxImpl& io, const object_t& oid, bufferlist& cmdbl)
+int librados::RadosClient::tmap_update(IoCtxImpl& io, const object_t& oid, bufferlist& cmdbl)
 {
   utime_t ut = ceph_clock_now(cct);
 
@@ -1850,12 +2021,78 @@ tmap_update(IoCtxImpl& io, const object_t& oid, bufferlist& cmdbl)
   lock.Lock();
   ::SnapContext snapc;
   ::ObjectOperation wr;
-  if (io.assert_ver) {
-    wr.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  prepare_assert_ops(&io, &wr);
   wr.tmap_update(cmdbl);
   objecter->mutate(oid, io.oloc, wr, snapc, ut, 0, onack, NULL, &ver);
+  lock.Unlock();
+
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
+
+  set_sync_op_version(io, ver);
+
+  return r;
+}
+
+int librados::RadosClient::tmap_put(IoCtxImpl& io, const object_t& oid, bufferlist& bl)
+{
+  utime_t ut = ceph_clock_now(cct);
+
+  /* can't write to a snapshot */
+  if (io.snap_seq != CEPH_NOSNAP)
+    return -EROFS;
+
+  Mutex mylock("RadosClient::tmap_put::mylock");
+  Cond cond;
+  bool done;
+  int r;
+  Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
+  eversion_t ver;
+
+  bufferlist outbl;
+
+  lock.Lock();
+  ::SnapContext snapc;
+  ::ObjectOperation wr;
+  prepare_assert_ops(&io, &wr);
+  wr.tmap_put(bl);
+  objecter->mutate(oid, io.oloc, wr, snapc, ut, 0, onack, NULL, &ver);
+  lock.Unlock();
+
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
+
+  set_sync_op_version(io, ver);
+
+  return r;
+}
+
+int librados::RadosClient::tmap_get(IoCtxImpl& io, const object_t& oid, bufferlist& bl)
+{
+  utime_t ut = ceph_clock_now(cct);
+
+  /* can't write to a snapshot */
+  if (io.snap_seq != CEPH_NOSNAP)
+    return -EROFS;
+
+  Mutex mylock("RadosClient::tmap_put::mylock");
+  Cond cond;
+  bool done;
+  int r;
+  Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
+  eversion_t ver;
+
+  bufferlist outbl;
+
+  lock.Lock();
+  ::ObjectOperation rd;
+  prepare_assert_ops(&io, &rd);
+  rd.tmap_get();
+  objecter->read(oid, io.oloc, rd, io.snap_seq, &bl, 0, onack, &ver);
   lock.Unlock();
 
   mylock.Lock();
@@ -1885,10 +2122,7 @@ exec(IoCtxImpl& io, const object_t& oid, const char *cls, const char *method,
 
   lock.Lock();
   ::ObjectOperation rd;
-  if (io.assert_ver) {
-    rd.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  prepare_assert_ops(&io, &rd);
   rd.call(cls, method, inbl);
   objecter->read(oid, io.oloc, rd, io.snap_seq, &outbl, 0, onack, &ver);
   lock.Unlock();
@@ -1915,12 +2149,9 @@ RadosClient::read(IoCtxImpl& io, const object_t& oid,
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+
   lock.Lock();
   objecter->read(oid, io.oloc,
 	      off, len, io.snap_seq, &bl, 0,
@@ -2030,12 +2261,9 @@ stat(IoCtxImpl& io, const object_t& oid, uint64_t *psize, time_t *pmtime)
   if (!psize)
     psize = &size;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+
   lock.Lock();
   objecter->stat(oid, io.oloc,
 	      io.snap_seq, psize, &mtime, 0,
@@ -2068,12 +2296,9 @@ getxattr(IoCtxImpl& io, const object_t& oid, const char *name, bufferlist& bl)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+
   lock.Lock();
   objecter->getxattr(oid, io.oloc,
 	      name, io.snap_seq, &bl, 0,
@@ -2111,12 +2336,9 @@ rmxattr(IoCtxImpl& io, const object_t& oid, const char *name)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+
   lock.Lock();
   objecter->removexattr(oid, io.oloc, name,
 		  io.snapc, ut, 0,
@@ -2153,12 +2375,9 @@ setxattr(IoCtxImpl& io, const object_t& oid, const char *name, bufferlist& bl)
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+
   lock.Lock();
   objecter->setxattr(oid, io.oloc, name,
 		  io.snapc, bl, ut, 0,
@@ -2175,7 +2394,7 @@ setxattr(IoCtxImpl& io, const object_t& oid, const char *name, bufferlist& bl)
   if (r < 0)
     return r;
 
-  return bl.length();
+  return 0;
 }
 
 int librados::RadosClient::
@@ -2188,12 +2407,9 @@ getxattrs(IoCtxImpl& io, const object_t& oid, map<std::string, bufferlist>& attr
   int r;
   eversion_t ver;
 
-  ::ObjectOperation op, *pop = NULL;
-  if (io.assert_ver) {
-    op.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-    pop = &op;
-  }
+  ::ObjectOperation op;
+  ::ObjectOperation *pop = prepare_assert_ops(&io, &op);
+
   Context *onack = new C_SafeCond(&mylock, &cond, &done, &r);
 
   lock.Lock();
@@ -2254,11 +2470,7 @@ watch(IoCtxImpl& io, const object_t& oid, uint64_t ver,
 
   WatchContext *wc;
   register_watcher(io, oid, ctx, cookie, &wc);
-
-  if (io.assert_ver) {
-    rd.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  prepare_assert_ops(&io, &rd);
   rd.watch(*cookie, ver, 1);
   bufferlist bl;
   wc->linger_id = objecter->linger(oid, io.oloc, rd, io.snap_seq, bl, NULL, 0, onack, NULL, &objver);
@@ -2292,10 +2504,7 @@ _notify_ack(IoCtxImpl& io, const object_t& oid, uint64_t notify_id, uint64_t ver
   eversion_t objver;
 
   ::ObjectOperation rd;
-  if (io.assert_ver) {
-    rd.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  prepare_assert_ops(&io, &rd);
   rd.notify_ack(notify_id, ver);
   objecter->read(oid, io.oloc, rd, io.snap_seq, NULL, 0, 0, 0);
 
@@ -2319,10 +2528,7 @@ unwatch(IoCtxImpl& io, const object_t& oid, uint64_t cookie)
   unregister_watcher(cookie);
 
   ::ObjectOperation rd;
-  if (io.assert_ver) {
-    rd.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  prepare_assert_ops(&io, &rd);
   rd.watch(cookie, 0, 0);
   objecter->read(oid, io.oloc, rd, io.snap_seq, &outbl, 0, onack, &ver);
   lock.Unlock();
@@ -2352,12 +2558,10 @@ notify(IoCtxImpl& io, const object_t& oid, uint64_t ver, bufferlist& bl)
   eversion_t objver;
   uint64_t cookie;
   C_NotifyComplete *ctx = new C_NotifyComplete(&mylock_all, &cond_all, &done_all);
-  ::ObjectOperation rd;
 
-  if (io.assert_ver) {
-    rd.assert_version(io.assert_ver);
-    io.assert_ver = 0;
-  }
+  ::ObjectOperation rd;
+  prepare_assert_ops(&io, &rd);
+
   lock.Lock();
   register_watcher(io, oid, ctx, &cookie);
   uint32_t prot_ver = 1;
@@ -2375,8 +2579,11 @@ notify(IoCtxImpl& io, const object_t& oid, uint64_t ver, bufferlist& bl)
     cond.Wait(mylock);
   mylock.Unlock();
 
-  while (!done_all)
-    cond_all.Wait(mylock_all);
+  if (r == 0) {
+    while (!done_all)
+      cond_all.Wait(mylock_all);
+  }
+
   mylock_all.Unlock();
 
   lock.Lock();
@@ -2591,6 +2798,12 @@ operator=(const IoCtx& rhs)
 librados::IoCtx::
 ~IoCtx()
 {
+  close();
+}
+
+void librados::IoCtx::
+close()
+{
   if (io_ctx_impl)
     io_ctx_impl->put();
   io_ctx_impl = 0;
@@ -2624,11 +2837,16 @@ get_auid(uint64_t *auid_)
   return io_ctx_impl->client->pool_get_auid(io_ctx_impl, (unsigned long long *)auid_);
 }
 
-int librados::IoCtx::
-create(const std::string& oid, bool exclusive)
+int librados::IoCtx::create(const std::string& oid, bool exclusive)
 {
   object_t obj(oid);
   return io_ctx_impl->client->create(*io_ctx_impl, obj, exclusive);
+}
+
+int librados::IoCtx::create(const std::string& oid, bool exclusive, const std::string& category)
+{
+  object_t obj(oid);
+  return io_ctx_impl->client->create(*io_ctx_impl, obj, exclusive, category);
 }
 
 int librados::IoCtx::
@@ -2740,23 +2958,40 @@ exec(const std::string& oid, const char *cls, const char *method,
   return io_ctx_impl->client->exec(*io_ctx_impl, obj, cls, method, inbl, outbl);
 }
 
-int librados::IoCtx::
-tmap_update(const std::string& oid, bufferlist& cmdbl)
+int librados::IoCtx::tmap_update(const std::string& oid, bufferlist& cmdbl)
 {
   object_t obj(oid);
   return io_ctx_impl->client->tmap_update(*io_ctx_impl, obj, cmdbl);
 }
 
-int librados::IoCtx::operate(const std::string& oid, librados::ObjectOperation *o, bufferlist *pbl)
+int librados::IoCtx::tmap_put(const std::string& oid, bufferlist& bl)
 {
   object_t obj(oid);
-  return io_ctx_impl->client->operate(*io_ctx_impl, obj, (::ObjectOperation*)o->impl, pbl);
+  return io_ctx_impl->client->tmap_put(*io_ctx_impl, obj, bl);
 }
 
-int librados::IoCtx::aio_operate(const std::string& oid, AioCompletion *c, librados::ObjectOperation *o, bufferlist *pbl)
+int librados::IoCtx::tmap_get(const std::string& oid, bufferlist& bl)
 {
   object_t obj(oid);
-  return io_ctx_impl->client->aio_operate(*io_ctx_impl, obj, (::ObjectOperation*)o->impl, c->pc, pbl);
+  return io_ctx_impl->client->tmap_get(*io_ctx_impl, obj, bl);
+}
+
+int librados::IoCtx::operate(const std::string& oid, librados::ObjectWriteOperation *o)
+{
+  object_t obj(oid);
+  return io_ctx_impl->client->operate(*io_ctx_impl, obj, (::ObjectOperation*)o->impl, o->pmtime);
+}
+
+int librados::IoCtx::operate(const std::string& oid, librados::ObjectReadOperation *o, bufferlist *pbl)
+{
+  object_t obj(oid);
+  return io_ctx_impl->client->operate_read(*io_ctx_impl, obj, (::ObjectOperation*)o->impl, pbl);
+}
+
+int librados::IoCtx::aio_operate(const std::string& oid, AioCompletion *c, librados::ObjectOperation *o)
+{
+  object_t obj(oid);
+  return io_ctx_impl->client->aio_operate(*io_ctx_impl, obj, (::ObjectOperation*)o->impl, c->pc);
 }
 
 
@@ -2940,6 +3175,13 @@ set_assert_version(uint64_t ver)
   io_ctx_impl->client->set_assert_version(*io_ctx_impl, ver);
 }
 
+void librados::IoCtx::
+set_assert_src_version(const std::string& oid, uint64_t ver)
+{
+  object_t obj(oid);
+  io_ctx_impl->client->set_assert_src_version(*io_ctx_impl, obj, ver);
+}
+
 const std::string& librados::IoCtx::
 get_pool_name() const
 {
@@ -3022,10 +3264,10 @@ conf_read_file(const char * const path) const
   return rados_conf_read_file((rados_t)client, path);
 }
 
-void librados::Rados::
+int librados::Rados::
 conf_parse_argv(int argc, const char ** argv) const
 {
-  rados_conf_parse_argv((rados_t)client, argc, argv);
+  return rados_conf_parse_argv((rados_t)client, argc, argv);
 }
 
 int librados::Rados::
@@ -3125,26 +3367,63 @@ ioctx_create(const char *name, IoCtx &io)
 }
 
 int librados::Rados::
-get_pool_stats(std::list<string>& v, std::map<string,pool_stat_t>& result)
+get_pool_stats(std::list<string>& v, std::map<string, stats_map>& result)
+{
+  string category;
+  return get_pool_stats(v, category, result);
+}
+
+int librados::Rados::
+get_pool_stats(std::list<string>& v, string& category, std::map<string, stats_map>& result)
 {
   map<string,::pool_stat_t> rawresult;
   int r = client->get_pool_stats(v, rawresult);
   for (map<string,::pool_stat_t>::iterator p = rawresult.begin();
        p != rawresult.end();
        p++) {
-    pool_stat_t& v = result[p->first];
-    v.num_kb = p->second.num_kb;
-    v.num_bytes = p->second.num_bytes;
-    v.num_objects = p->second.num_objects;
-    v.num_object_clones = p->second.num_object_clones;
-    v.num_object_copies = p->second.num_object_copies;
-    v.num_objects_missing_on_primary = p->second.num_objects_missing_on_primary;
-    v.num_objects_unfound = p->second.num_objects_unfound;
-    v.num_objects_degraded = p->second.num_objects_degraded;
-    v.num_rd = p->second.num_rd;
-    v.num_rd_kb = p->second.num_rd_kb;
-    v.num_wr = p->second.num_wr;
-    v.num_wr_kb = p->second.num_wr_kb;
+    stats_map& c = result[p->first];
+
+    string cat;
+    vector<string> cats;
+
+    if (!category.size()) {
+      cats.push_back(cat);
+      map<string,object_stat_sum_t>::iterator iter;
+      for (iter = p->second.stats.cat_sum.begin(); iter != p->second.stats.cat_sum.end(); ++iter) {
+        cats.push_back(iter->first);
+      }
+    } else {
+      cats.push_back(category);
+    }
+
+    vector<string>::iterator cat_iter;
+    for (cat_iter = cats.begin(); cat_iter != cats.end(); ++cat_iter) {
+      string& cur_category = *cat_iter;
+      object_stat_sum_t *sum;
+
+      if (!cur_category.size()) {
+         sum = &p->second.stats.sum;
+      } else {
+        map<string,object_stat_sum_t>::iterator iter = p->second.stats.cat_sum.find(cur_category);
+        if (iter == p->second.stats.cat_sum.end())
+          continue;
+        sum = &iter->second;
+      }
+      
+      pool_stat_t& v = c[cur_category];
+      v.num_kb = sum->num_kb;
+      v.num_bytes = sum->num_bytes;
+      v.num_objects = sum->num_objects;
+      v.num_object_clones = sum->num_object_clones;
+      v.num_object_copies = sum->num_object_copies;
+      v.num_objects_missing_on_primary = sum->num_objects_missing_on_primary;
+      v.num_objects_unfound = sum->num_objects_unfound;
+      v.num_objects_degraded = sum->num_objects_degraded;
+      v.num_rd = sum->num_rd;
+      v.num_rd_kb = sum->num_rd_kb;
+      v.num_wr = sum->num_wr;
+      v.num_wr_kb = sum->num_wr_kb;
+    }
   }
   return r;
 }
@@ -3204,7 +3483,7 @@ extern "C" int rados_create(rados_t *pcluster, const char * const id)
 
   CephContext *cct = common_preinit(iparams, CODE_ENVIRONMENT_LIBRARY, 0);
   cct->_conf->parse_env(); // environment variables override
-  cct->_conf->apply_changes();
+  cct->_conf->apply_changes(NULL);
 
   librados::RadosClient *radosp = new librados::RadosClient(cct);
   *pcluster = (void *)radosp;
@@ -3257,19 +3536,22 @@ extern "C" int rados_conf_read_file(rados_t cluster, const char *path_list)
     return ret;
   conf->parse_env(); // environment variables override
 
-  conf->apply_changes();
+  conf->apply_changes(NULL);
   complain_about_parse_errors(client->cct, &parse_errors);
   return 0;
 }
 
-extern "C" void rados_conf_parse_argv(rados_t cluster, int argc, const char **argv)
+extern "C" int rados_conf_parse_argv(rados_t cluster, int argc, const char **argv)
 {
   librados::RadosClient *client = (librados::RadosClient *)cluster;
   md_config_t *conf = client->cct->_conf;
   vector<const char*> args;
   argv_to_vec(argc, argv, args);
-  conf->parse_argv(args);
-  conf->apply_changes();
+  int ret = conf->parse_argv(args);
+  if (ret)
+    return ret;
+  conf->apply_changes(NULL);
+  return 0;
 }
 
 extern "C" int rados_conf_set(rados_t cluster, const char *option, const char *value)
@@ -3279,7 +3561,7 @@ extern "C" int rados_conf_set(rados_t cluster, const char *option, const char *v
   int ret = conf->set_val(option, value);
   if (ret)
     return ret;
-  conf->apply_changes();
+  conf->apply_changes(NULL);
   return 0;
 }
 
@@ -3372,30 +3654,30 @@ extern "C" int rados_ioctx_pool_stat(rados_ioctx_t io, struct rados_pool_stat_t 
     return err;
 
   ::pool_stat_t& r = rawresult[io_ctx_impl->pool_name];
-  stats->num_kb = r.num_kb;
-  stats->num_bytes = r.num_bytes;
-  stats->num_objects = r.num_objects;
-  stats->num_object_clones = r.num_object_clones;
-  stats->num_object_copies = r.num_object_copies;
-  stats->num_objects_missing_on_primary = r.num_objects_missing_on_primary;
-  stats->num_objects_unfound = r.num_objects_unfound;
-  stats->num_objects_degraded = r.num_objects_degraded;
-  stats->num_rd = r.num_rd;
-  stats->num_rd_kb = r.num_rd_kb;
-  stats->num_wr = r.num_wr;
-  stats->num_wr_kb = r.num_wr_kb;
+  stats->num_kb = r.stats.sum.num_kb;
+  stats->num_bytes = r.stats.sum.num_bytes;
+  stats->num_objects = r.stats.sum.num_objects;
+  stats->num_object_clones = r.stats.sum.num_object_clones;
+  stats->num_object_copies = r.stats.sum.num_object_copies;
+  stats->num_objects_missing_on_primary = r.stats.sum.num_objects_missing_on_primary;
+  stats->num_objects_unfound = r.stats.sum.num_objects_unfound;
+  stats->num_objects_degraded = r.stats.sum.num_objects_degraded;
+  stats->num_rd = r.stats.sum.num_rd;
+  stats->num_rd_kb = r.stats.sum.num_rd_kb;
+  stats->num_wr = r.stats.sum.num_wr;
+  stats->num_wr_kb = r.stats.sum.num_wr_kb;
   return 0;
 }
 
 
-extern "C" void rados_snap_set_read(rados_ioctx_t io, rados_snap_t seq)
+extern "C" void rados_ioctx_snap_set_read(rados_ioctx_t io, rados_snap_t seq)
 {
   librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
   ctx->set_snap_read((snapid_t)seq);
 }
 
-extern "C" int rados_snap_set_write_context(rados_ioctx_t io, rados_snap_t seq,
-				       rados_snap_t *snaps, int num_snaps)
+extern "C" int rados_ioctx_selfmanaged_snap_set_write_ctx(rados_ioctx_t io, 
+	    rados_snap_t seq, rados_snap_t *snaps, int num_snaps)
 {
   librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
   vector<snapid_t> snv;
@@ -3423,7 +3705,7 @@ extern "C" int rados_append(rados_ioctx_t io, const char *o, const char *buf, si
   return ctx->client->append(*ctx, oid, bl, len);
 }
 
-extern "C" int rados_write_full(rados_ioctx_t io, const char *o, const char *buf, size_t len, uint64_t off)
+extern "C" int rados_write_full(rados_ioctx_t io, const char *o, const char *buf, size_t len)
 {
   librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
   object_t oid(o);
@@ -3749,6 +4031,29 @@ extern "C" int rados_tmap_update(rados_ioctx_t io, const char *o, const char *cm
   bufferlist cmdbl;
   cmdbl.append(cmdbuf, cmdbuflen);
   return ctx->client->tmap_update(*ctx, oid, cmdbl);
+}
+
+extern "C" int rados_tmap_put(rados_ioctx_t io, const char *o, const char *buf, size_t buflen)
+{
+  librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
+  object_t oid(o);
+  bufferlist bl;
+  bl.append(buf, buflen);
+  return ctx->client->tmap_put(*ctx, oid, bl);
+}
+
+extern "C" int rados_tmap_get(rados_ioctx_t io, const char *o, char *buf, size_t buflen)
+{
+  librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
+  object_t oid(o);
+  bufferlist bl;
+  int r = ctx->client->tmap_get(*ctx, oid, bl);
+  if (r < 0)
+    return r;
+  if (bl.length() > buflen)
+    return -ERANGE;
+  bl.copy(0, bl.length(), buf);
+  return bl.length();
 }
 
 extern "C" int rados_exec(rados_ioctx_t io, const char *o, const char *cls, const char *method,

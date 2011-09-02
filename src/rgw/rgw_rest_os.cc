@@ -1,6 +1,9 @@
 
+#include "common/Formatter.h"
 #include "rgw_os.h"
 #include "rgw_rest_os.h"
+
+#include <sstream>
 
 void RGWListBuckets_REST_OS::send_response()
 {
@@ -34,19 +37,24 @@ void RGWListBuckets_REST_OS::send_response()
 
   for (int i = 0; i < limit && iter != m.end(); ++iter, ++i) {
     RGWBucketEnt obj = iter->second;
-    s->formatter->open_obj_section("container");
-    s->formatter->dump_value_str("name", obj.name.c_str());
-    s->formatter->dump_value_int("count", "%lld", obj.count);
-    s->formatter->dump_value_int("bytes", "%lld", obj.size);
-    s->formatter->close_section("container");
+    s->formatter->open_object_section("container");
+    s->formatter->dump_format("name", obj.name.c_str());
+    s->formatter->dump_int("count", obj.count);
+    s->formatter->dump_int("bytes", obj.size);
+    s->formatter->close_section();
   }
-  s->formatter->close_section("account");
+  s->formatter->close_section();
 
-  RGW_LOG(10) << "formatter->get_len=" << s->formatter->get_len() << dendl;
-
-  dump_content_length(s, s->formatter->get_len());
+  ostringstream oss;
+  s->formatter->flush(oss);
+  std::string outs(oss.str());
+  string::size_type outs_size = outs.size();
+  dump_content_length(s, outs_size);
   end_header(s);
-  s->formatter->flush(s);
+  if (!outs.empty()) {
+    CGI_PutStr(s, outs.c_str(), outs_size);
+  }
+  s->formatter->reset();
 }
 
 void RGWListBucket_REST_OS::send_response()
@@ -81,20 +89,20 @@ void RGWListBucket_REST_OS::send_response()
       do_pref = true;
 
     if (do_objs && (marker.empty() || iter->name.compare(marker) > 0)) {
-      s->formatter->open_obj_section("object");
-      s->formatter->dump_value_str("name", iter->name.c_str());
-      s->formatter->dump_value_str("hash", "\"%s\"", iter->etag);
-      s->formatter->dump_value_int("bytes", "%lld", iter->size);
+      s->formatter->open_object_section("object");
+      s->formatter->dump_format("name", iter->name.c_str());
+      s->formatter->dump_format("hash", "\"%s\"", iter->etag);
+      s->formatter->dump_int("bytes", iter->size);
       if (iter->content_type.size())
-        s->formatter->dump_value_str("content_type", iter->content_type.c_str());
+        s->formatter->dump_format("content_type", iter->content_type.c_str());
       dump_time(s, "last_modified", &iter->mtime);
-      s->formatter->close_section("object");
+      s->formatter->close_section();
     }
 
     if (do_pref &&  (marker.empty() || pref_iter->first.compare(marker) > 0)) {
-      s->formatter->open_obj_section("object");
-      s->formatter->dump_value_str("name", pref_iter->first.c_str());
-      s->formatter->close_section("object");
+      s->formatter->open_object_section("object");
+      s->formatter->dump_format("name", pref_iter->first.c_str());
+      s->formatter->close_section();
     }
     if (do_objs)
       iter++;
@@ -102,10 +110,10 @@ void RGWListBucket_REST_OS::send_response()
       pref_iter++;
   }
 
-  s->formatter->close_section("container");
+  s->formatter->close_section();
 
   end_header(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 static void dump_container_metadata(struct req_state *s, RGWBucketEnt& bucket)
@@ -128,7 +136,7 @@ void RGWStatBucket_REST_OS::send_response()
 
   end_header(s);
   dump_start(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void RGWCreateBucket_REST_OS::send_response()
@@ -137,7 +145,7 @@ void RGWCreateBucket_REST_OS::send_response()
     set_req_state_err(s, ret);
   dump_errno(s);
   end_header(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void RGWDeleteBucket_REST_OS::send_response()
@@ -149,7 +157,7 @@ void RGWDeleteBucket_REST_OS::send_response()
   set_req_state_err(s, r);
   dump_errno(s);
   end_header(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void RGWPutObj_REST_OS::send_response()
@@ -160,7 +168,7 @@ void RGWPutObj_REST_OS::send_response()
   set_req_state_err(s, ret);
   dump_errno(s);
   end_header(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 void RGWDeleteObj_REST_OS::send_response()
@@ -172,7 +180,7 @@ void RGWDeleteObj_REST_OS::send_response()
   set_req_state_err(s, r);
   dump_errno(s);
   end_header(s);
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 }
 
 int RGWGetObj_REST_OS::send_response(void *handle)
@@ -226,7 +234,7 @@ send_data:
   if (get_data && !orig_ret) {
     CGI_PutStr(s, data, len);
   }
-  s->formatter->flush(s);
+  flush_formatter_to_req_state(s, s->formatter);
 
   return 0;
 }
@@ -289,7 +297,11 @@ RGWOp *RGWHandler_REST_OS::get_delete_op()
   return NULL;
 }
 
-bool RGWHandler_REST_OS::authorize()
+int RGWHandler_REST_OS::authorize()
 {
-  return rgw_verify_os_token(s);
+  bool authorized = rgw_verify_os_token(s);
+  if (!authorized)
+    return -EPERM;
+
+  return 0;
 }

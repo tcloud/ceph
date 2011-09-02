@@ -61,11 +61,12 @@ class RGWProcess {
 
   struct RGWWQ : public ThreadPool::WorkQueue<FCGX_Request> {
     RGWProcess *process;
-    RGWWQ(RGWProcess *p, ThreadPool *tp) : ThreadPool::WorkQueue<FCGX_Request>("RGWWQ", tp), process(p) {}
+    RGWWQ(RGWProcess *p, time_t ti, ThreadPool *tp)
+      : ThreadPool::WorkQueue<FCGX_Request>("RGWWQ", ti, tp), process(p) {}
 
     bool _enqueue(FCGX_Request *req) {
       process->m_fcgx_queue.push_back(req);
-      RGW_LOG(0) << "enqueued request fcgx=" << hex << req << dec << dendl;
+      RGW_LOG(20) << "enqueued request fcgx=" << hex << req << dec << dendl;
       _dump_queue();
       return true;
     }
@@ -80,7 +81,7 @@ class RGWProcess {
 	return NULL;
       FCGX_Request *req = process->m_fcgx_queue.front();
       process->m_fcgx_queue.pop_front();
-      RGW_LOG(0) << "dequeued request fcgx=" << hex << req << dec << dendl;
+      RGW_LOG(20) << "dequeued request fcgx=" << hex << req << dec << dendl;
       _dump_queue();
       return req;
     }
@@ -90,12 +91,12 @@ class RGWProcess {
     void _dump_queue() {
       deque<FCGX_Request *>::iterator iter;
       if (process->m_fcgx_queue.size() == 0) {
-        RGW_LOG(0) << "RGWWQ: empty" << dendl;
+        RGW_LOG(20) << "RGWWQ: empty" << dendl;
         return;
       }
-      RGW_LOG(0) << "RGWWQ:" << dendl;
+      RGW_LOG(20) << "RGWWQ:" << dendl;
       for (iter = process->m_fcgx_queue.begin(); iter != process->m_fcgx_queue.end(); ++iter) {
-        RGW_LOG(0) << "fcgx: " << hex << *iter << dec << dendl;
+        RGW_LOG(20) << "fcgx: " << hex << *iter << dec << dendl;
       }
     }
     void _clear() {
@@ -104,7 +105,9 @@ class RGWProcess {
   } req_wq;
 
 public:
-  RGWProcess(CephContext *cct, int num_threads) : m_tp(cct, "RGWProcess::m_tp", num_threads), req_wq(this, &m_tp) {}
+  RGWProcess(CephContext *cct, int num_threads)
+    : m_tp(cct, "RGWProcess::m_tp", num_threads),
+      req_wq(this, g_conf->rgw_op_thread_timeout, &m_tp) {}
   void run();
   void handle_request(FCGX_Request *fcgx);
 };
@@ -129,7 +132,7 @@ void RGWProcess::run()
 
   for (;;) {
     FCGX_Request *fcgx = new FCGX_Request;
-    RGW_LOG(0) << "allocated request fcgx=" << hex << fcgx << dec << dendl;
+    RGW_LOG(10) << "allocated request fcgx=" << hex << fcgx << dec << dendl;
     FCGX_InitRequest(fcgx, s, 0);
     int ret = FCGX_Accept_r(fcgx);
     if (ret < 0)
@@ -137,6 +140,12 @@ void RGWProcess::run()
 
     req_wq.queue(fcgx);
   }
+}
+
+static int call_log_intent(void *ctx, rgw_obj& obj, RGWIntentEvent intent)
+{
+  struct req_state *s = (struct req_state *)ctx;
+  return rgw_log_intent(s, obj, intent);
 }
 
 void RGWProcess::handle_request(FCGX_Request *fcgx)
@@ -150,6 +159,8 @@ void RGWProcess::handle_request(FCGX_Request *fcgx)
   rgw_env.init(fcgx->envp);
 
   struct req_state *s = new req_state(&rgw_env);
+  s->obj_ctx = rgwstore->create_context(s);
+  rgwstore->set_intent_cb(s->obj_ctx, call_log_intent);
 
   RGWOp *op = NULL;
   int init_error = 0;
@@ -160,9 +171,10 @@ void RGWProcess::handle_request(FCGX_Request *fcgx)
     goto done;
   }
 
-  if (!handler->authorize()) {
+  ret = handler->authorize();
+  if (ret < 0) {
     RGW_LOG(10) << "failed to authorize request" << dendl;
-    abort_early(s, -EPERM);
+    abort_early(s, ret);
     goto done;
   }
   if (s->user.suspended) {
@@ -197,6 +209,7 @@ done:
   int http_ret = s->err.http_ret;
 
   handler->put_op(op);
+  rgwstore->destroy_context(s->obj_ctx);
   delete s;
   FCGX_Finish_r(fcgx);
   delete fcgx;

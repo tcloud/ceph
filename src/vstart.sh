@@ -252,6 +252,7 @@ DAEMONOPTS="
         admin socket = out/asok.\$name
 	chdir = \"\"
 	pid file = out/\$name.pid
+        heartbeat file = out/\$name.heartbeat
 "
 
 
@@ -408,12 +409,11 @@ EOF
 		fi
 		if [ "$standby" -eq 1 ]; then
 		    cat <<EOF >> $conf
-;        mds standby replay = true
        mds standby for rank = $mds
 [mds.${name}s]
         keyring = dev/mds.${name}s.keyring
-;        mds standby replay = true
-        mds standby for rank = $mds
+        mds standby replay = true
+        mds standby for name = ${name}
 EOF
 		fi
 	    fi

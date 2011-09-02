@@ -46,6 +46,8 @@ namespace librados
     uint64_t num_rd, num_rd_kb, num_wr, num_wr_kb;
   };
 
+  typedef std::map<std::string, pool_stat_t> stats_map;
+
   typedef void *completion_t;
   typedef void (*callback_t)(completion_t cb, void *arg);
 
@@ -101,6 +103,11 @@ namespace librados
     PoolAsyncCompletionImpl *pc;
   };
 
+  enum ObjectOperationFlags {
+    OP_EXCL =   1,
+    OP_FAILOK = 2,
+  };
+
   /*
    * ObjectOperation : compount object operation
    * Batch multiple object operations into a single request, to be applied
@@ -110,9 +117,45 @@ namespace librados
   {
   public:
     ObjectOperation();
-    ~ObjectOperation();
+    virtual ~ObjectOperation();
+
+    size_t size();
+    void set_op_flags(ObjectOperationFlags flags);
+
+    void cmpxattr(const char *name, uint8_t op, const bufferlist& val);
+    void cmpxattr(const char *name, uint8_t op, uint64_t v);
+    void src_cmpxattr(const std::string& src_oid,
+		      const char *name, int op, const bufferlist& val);
+    void src_cmpxattr(const std::string& src_oid,
+		      const char *name, int op, uint64_t v);
+
+  protected:
+    ObjectOperationImpl *impl;
+    ObjectOperation(const ObjectOperation& rhs);
+    ObjectOperation& operator=(const ObjectOperation& rhs);
+    friend class IoCtx;
+    friend class Rados;
+  };
+
+  /*
+   * ObjectWriteOperation : compount object write operation
+   * Batch multiple object operations into a single request, to be applied
+   * atomically.
+   */
+  class ObjectWriteOperation : public ObjectOperation
+  {
+  protected:
+    time_t *pmtime;
+  public:
+    ObjectWriteOperation() : pmtime(NULL) {}
+    ~ObjectWriteOperation() {}
+
+    void mtime(time_t *pt) {
+      pmtime = pt;
+    }
 
     void create(bool exclusive);
+    void create(bool exclusive, const std::string& category);
     void write(uint64_t off, const bufferlist& bl);
     void write_full(const bufferlist& bl);
     void append(const bufferlist& bl);
@@ -126,26 +169,36 @@ namespace librados
                      const std::string& src_oid, uint64_t src_off,
                      size_t len);
 
-    void exec(const char *cls, const char *method, bufferlist& bl);
-
-  private:
-    ObjectOperationImpl *impl;
-    ObjectOperation(const ObjectOperation& rhs);
-    ObjectOperation& operator=(const ObjectOperation& rhs);
     friend class IoCtx;
-    friend class Rados;
   };
+
+  /*
+   * ObjectReadOperation : compount object operation that return value
+   * Batch multiple object operations into a single request, to be applied
+   * atomically.
+   */
+  class ObjectReadOperation : public ObjectOperation
+  {
+  public:
+    ObjectReadOperation() {}
+    ~ObjectReadOperation() {}
+
+    void stat();
+    void getxattr(const char *name);
+    void getxattrs();
+    void read(size_t off, uint64_t len);
+  };
+
 
   /* IoCtx : This is a context in which we can perform I/O.
    * It includes a Pool,
    *
    * Typical use (error checking omitted):
    *
-   * IoCtx *p;
-   * rados.ioctx_create("my_pool", &p);
+   * IoCtx p;
+   * rados.ioctx_create("my_pool", p);
    * p->stat(&stats);
    * ... etc ...
-   * delete p; // close our pool handle
    */
   class IoCtx
   {
@@ -155,8 +208,10 @@ namespace librados
     IoCtx(const IoCtx& rhs);
     IoCtx& operator=(const IoCtx& rhs);
 
-    // Close our pool handle
     ~IoCtx();
+
+    // Close our pool handle
+    void close();
 
     // deep copy
     void dup(const IoCtx& rhs);
@@ -172,6 +227,7 @@ namespace librados
 
     // create an object
     int create(const std::string& oid, bool exclusive);
+    int create(const std::string& oid, bool exclusive, const std::string& category);
 
     int write(const std::string& oid, bufferlist& bl, size_t len, uint64_t off);
     int append(const std::string& oid, bufferlist& bl, size_t len);
@@ -192,6 +248,8 @@ namespace librados
     int exec(const std::string& oid, const char *cls, const char *method,
 	     bufferlist& inbl, bufferlist& outbl);
     int tmap_update(const std::string& oid, bufferlist& cmdbl);
+    int tmap_put(const std::string& oid, bufferlist& bl);
+    int tmap_get(const std::string& oid, bufferlist& bl);
 
     void snap_set_read(snap_t seq);
     int selfmanaged_snap_set_write_ctx(snap_t seq, std::vector<snap_t>& snaps);
@@ -241,8 +299,9 @@ namespace librados
     int aio_flush();
 
     // compound object operations
-    int operate(const std::string& oid, ObjectOperation *op, bufferlist *pbl);
-    int aio_operate(const std::string& oid, AioCompletion *c, ObjectOperation *op, bufferlist *pbl);
+    int operate(const std::string& oid, ObjectWriteOperation *op);
+    int operate(const std::string& oid, ObjectReadOperation *op, bufferlist *pbl);
+    int aio_operate(const std::string& oid, AioCompletion *c, ObjectOperation *op);
 
     // watch/notify
     int watch(const std::string& o, uint64_t ver, uint64_t *handle,
@@ -253,6 +312,7 @@ namespace librados
 
     // assert version for next sync operations
     void set_assert_version(uint64_t ver);
+    void set_assert_src_version(const std::string& o, uint64_t ver);
 
     const std::string& get_pool_name() const;
 
@@ -284,7 +344,7 @@ namespace librados
     int connect();
     void shutdown();
     int conf_read_file(const char * const path) const;
-    void conf_parse_argv(int argc, const char ** argv) const;
+    int conf_parse_argv(int argc, const char ** argv) const;
     int conf_set(const char *option, const char *value);
     int conf_get(const char *option, std::string &val);
 
@@ -304,7 +364,10 @@ namespace librados
     /* listing objects */
     int pool_list(std::list<std::string>& v);
     int get_pool_stats(std::list<std::string>& v,
-		       std::map<std::string,pool_stat_t>& stats);
+		       std::map<std::string, stats_map>& stats);
+    int get_pool_stats(std::list<std::string>& v,
+                       std::string& category,
+		       std::map<std::string, stats_map>& stats);
     int cluster_stat(cluster_stat_t& result);
 
     /* pool aio */
