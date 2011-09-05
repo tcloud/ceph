@@ -98,6 +98,7 @@ int rados_conf_get(rados_t cluster, const char *option, char *buf, size_t len);
 /* cluster info */
 int rados_cluster_stat(rados_t cluster, struct rados_cluster_stat_t *result);
 
+int rados_osdmap_dump_json(rados_t cluster, char* buf, size_t len);
 
 /* pools */
 

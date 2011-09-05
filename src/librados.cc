@@ -565,6 +565,8 @@ public:
 
   ::ObjectOperation *prepare_assert_ops(IoCtxImpl *io, ::ObjectOperation *op);
 
+  int osdmap_dump_json(char* buf, size_t len);
+
   // snaps
   int snap_list(IoCtxImpl *io, vector<uint64_t> *snaps);
   int snap_lookup(IoCtxImpl *io, const char *name, uint64_t *snapid);
@@ -1382,6 +1384,17 @@ pool_get_auid(rados_ioctx_t io, unsigned long long *auid)
   if (!pg)
     return -ENOENT;
   *auid = pg->v.auid;
+  return 0;
+}
+
+int librados::RadosClient::
+osdmap_dump_json(char* buf, size_t len)
+{
+  stringstream ss;
+  osdmap.dump_json(ss);
+  if (len < ss.str().size() + 1)
+    return ss.str().size() + 1;
+  strncpy(buf, ss.str().c_str(), ss.str().size());
   return 0;
 }
 
@@ -3577,6 +3590,12 @@ extern "C" int rados_cluster_stat(rados_t cluster, rados_cluster_stat_t *result)
   result->kb_avail = stats.kb_avail;
   result->num_objects = stats.num_objects;
   return r;
+}
+
+extern "C" int rados_osdmap_dump_json(rados_t cluster, char * buf, size_t len)
+{
+  librados::RadosClient *client = (librados::RadosClient *)cluster;
+  return client->osdmap_dump_json(buf, len);
 }
 
 extern "C" int rados_conf_get(rados_t cluster, const char *option, char *buf, size_t len)
