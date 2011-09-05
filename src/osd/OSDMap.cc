@@ -63,6 +63,14 @@ void OSDMap::dump(Formatter *f) const
       f->dump_int("osd", i);
       f->dump_int("up", is_up(i));
       f->dump_int("in", is_in(i));
+      stringstream ss, ss_cluster, ss_hb;
+      ss << get_addr(i);
+      f->dump_string("addr", ss.str().c_str());
+      ss_cluster << get_cluster_addr(i);
+      f->dump_string("cluster_addr", ss_cluster.str().c_str());
+      ss_hb << get_hb_addr(i);
+      f->dump_string("hb_addr", ss_hb.str().c_str());
+      
       get_info(i).dump(f);
       f->close_section();
     }
